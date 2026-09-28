@@ -1,25 +1,66 @@
 # nano-vanity
 
-A fast CPU vanity address generator for **Nano (XNO)**, written in Rust.
+**A fast Nano (XNO) vanity address generator written in Rust** — find a Nano
+address that starts, ends, or contains any pattern you like, and get back the
+**wallet seed** that produces it, not just a private key nothing can restore
+from.
 
-Find a Nano address that starts, ends, or contains a pattern you choose — and
-get the **wallet seed** that produces it, not just a private key that nothing
-can restore from.
+[![CI](https://github.com/tyyuuii/nano-vanity/actions/workflows/ci.yml/badge.svg)](https://github.com/tyyuuii/nano-vanity/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tyyuuii/nano-vanity?label=release)](https://github.com/tyyuuii/nano-vanity/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
+[![Platforms](https://img.shields.io/badge/Termux%20%7C%20Linux%20%7C%20Windows-informational.svg)](INSTALL.md)
 
-- **Account 0 vanity.** Search candidate *seeds* so the vanity address is your
-  wallet's first account. Import the seed and you're done.
-- **Reproducible.** Same seed and pattern always give the same result.
-- **Correctness first.** The derivation is re-derived from published vectors
-  and cross-checked against an independent implementation on every commit.
-  See [`ERRATA.md`](ERRATA.md) for what the commonly-copied recipe gets wrong.
-- **Runs anywhere Rust runs.** Prebuilt binaries for Termux (Android aarch64),
-  Ubuntu/Debian (x86_64), and Windows x64. A dependency-free local web UI is
-  included; the server uses only `std::net`.
+```sh
+# the whole workflow: a 5-character prefix on account 0, in your wallet's seed
+nano-vanity 1test --grind
+```
+
+### Why not just grind a private key?
+
+A Nano account is defined by `Blake2b-256(seed ‖ index)`, so a random 32-byte
+value is almost never an account at all — it is a standalone key that no seed
+phrase can bring back. This grinder reports `(seed, index)` for every hit, so
+the address is restorable, and with `--grind` the vanity address lands on
+**account 0**, which means importing the seed is the entire job.
+
+### Features
+
+- **Account 0 vanity** — search candidate *seeds* so the vanity address is your
+  wallet's first account, not account 40,000.
+- **Prefix, suffix, or contains** matching, plus `--skip-first` to accept both
+  `nano_1…` and `nano_3…` for half the work.
+- **Reproducible** — the same seed and pattern always return the same result.
+- **Collect several addresses at once** from one seed with `-n`.
+- **Verified derivation** — big-endian account index, Blake2b-512 expansion,
+  and a 260-bit prefix field, each pinned by regression tests and checked
+  against an independent Python implementation on every commit. See
+  [`ERRATA.md`](ERRATA.md) for what the commonly-copied recipe gets wrong.
+- **Runs natively on Android** in Termux, no proot and no root. Prebuilt
+  binaries for Termux (aarch64), Ubuntu/Debian (x86_64) and Windows x64, with
+  releases built automatically on a version tag.
+- **Local web UI** using only `std::net` — no axum, no tokio, no async runtime.
+- **Optional `--derive`** to check any seed and account index against a wallet
+  that disagrees with you.
 
 > ⚠️ The web UI displays wallet seeds and private keys in plain text. It binds
 > to `127.0.0.1` by default for that reason. Read
 > [the warning in `INSTALL.md`](INSTALL.md#web-ui-and-seeds--please-read)
 > before binding it anywhere else.
+
+## Quick reference
+
+| Goal | Command |
+|---|---|
+| Vanity address on **account 0** (import the seed, done) | `nano-vanity 1test --grind` |
+| Vanity address in a chosen seed, lowest account index | `nano-vanity 1test -s <seed>` |
+| Match the **end** of the address | `nano-vanity xyz -m suffix` |
+| Match **anywhere** in the address | `nano-vanity xyz -m contains` |
+| Accept both `nano_1…` and `nano_3…` | `nano-vanity 1test -F` |
+| Collect **N** addresses from one seed | `nano-vanity 1111 -n 5` |
+| Reproduce an earlier run | `nano-vanity 1111 -s <the printed seed>` |
+| Check a seed against a wallet | `nano-vanity --derive <SEED> --index 0` |
+| Local web UI | `nano-vanity --web` (or `Nanvin` on Termux) |
 
 ## Install
 
@@ -132,6 +173,18 @@ first 20 indices and keeps only accounts that are *already used on the ledger*,
 so a brand-new empty account is discarded and the import looks empty. That is
 expected — pressing "Add account" with no accounts present derives index 0,
 which is the vanity address.
+
+**Pick the right import type.** Nault offers several, and pasting a 64-hex
+value into the wrong one gives a valid but unrelated address. Use **Import
+Seed** (the panel that says *"64 hex character secret recovery seed"*), which is
+the legacy `Blake2b-256(seed ‖ index)` scheme this tool implements. Do **not**
+use *BIP39 Mnemonic* or *BIP39 Seed*: those are HD-wallet paths
+(`m/44'/165'/…`) and produce a completely different account from the same 64
+characters. Importing the **private key** also works and skips the seed scan
+entirely.
+
+A Nano account must also be *opened* before it can receive directly: send it a
+small amount from another account once.
 
 ### Web UI
 
