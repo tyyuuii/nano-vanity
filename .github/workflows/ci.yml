@@ -32,26 +32,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The suite performs real searches, so give it room on slower runners.
-      # Output is teed to a log and echoed into the step summary on failure,
-      # because run logs need admin rights to download and this repo's failures
-      # are otherwise undiagnosable from outside.
+      # The failure summary is written from inside this step rather than a
+      # separate `if: failure()` step, so it cannot itself go missing. Run logs
+      # need admin rights to download, which makes the step summary the only
+      # way to diagnose a red build from outside the repository.
       - name: Test
         run: |
           set -o pipefail
-          cargo test --workspace --locked 2>&1 | tee test.log
-      - name: Diagnostics
-        if: failure()
-        run: |
-          {
-            echo "### Test failure"
-            echo '```'
-            grep -E '^(test |failures:|error|thread )' -A 3 test.log | head -60 || true
-            echo '```'
-            echo 'Full output:'
-            echo '```'
-            tail -60 test.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          cargo test --workspace --locked 2>&1 | tee test.log || {
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "### Test failure" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -60 test.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### Tests passed" >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^test result' test.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
     name: Clippy and format

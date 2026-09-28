@@ -394,6 +394,17 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
 /// Serves until killed with Ctrl-C.
 pub fn serve(addr: SocketAddr) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
+    serve_listener(listener)
+}
+
+/// Serves on an already-bound listener.
+///
+/// Split out so tests can hand over a listener they already hold. Binding port
+/// 0 to *discover* a free port and then releasing it before rebinding is a
+/// TOCTOU race: under a loaded runner another thread can take the port in
+/// between, and the silently-failed bind then routes requests to the wrong
+/// server. Holding the listener removes the window entirely.
+pub fn serve_listener(listener: TcpListener) -> std::io::Result<()> {
     let local = listener.local_addr()?;
     let shown = if local.ip().is_unspecified() {
         format!("http://{}:{}/", local_hostname(), local.port())
@@ -1292,16 +1303,14 @@ mod tests {
     /// Start the web server on an ephemeral port and wait until it accepts.
     /// The server thread runs until the test process exits.
     fn spawn_test_server() -> std::net::SocketAddr {
-        let port = {
-            // Bind port 0 to discover a free port, then release it.
-            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        // Bind the listener here and hand it straight to the server, rather
+        // than discovering a free port and racing to rebind it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
         // Detached on purpose: `serve` loops forever and the process exit
         // tears it down. Joining would hang the suite.
         std::thread::spawn(move || {
-            let _ = serve(addr);
+            let _ = super::serve_listener(listener);
         });
         for _ in 0..150 {
             if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(50))
