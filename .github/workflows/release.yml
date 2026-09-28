@@ -68,22 +68,47 @@ jobs:
           targets: aarch64-linux-android
       # The Android target has no system linker of its own; the NDK supplies
       # the sysroot and the cross-linker. Everything in the dependency tree is
-      # pure Rust, so this is only ever needed to link.
+      # pure Rust, so the NDK is only ever needed to link.
       - uses: nttld/setup-ndk@v1
         id: ndk
         with:
           ndk-version: r27c
           add-to-path: false
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
+      # cargo-ndk's auto-detection proved fragile here, so the linker and
+      # archiver are wired up explicitly from the NDK's bundled LLVM instead.
+      # `${api}` in the clang name selects the minimum supported API level.
       - name: Build
-        run: cargo ndk -t arm64-v8a -o dist build --release --locked
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          LINKER="$TOOLCHAIN/bin/aarch64-linux-android21-clang"
+          {
+            echo "### NDK"
+            echo '```'
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+            echo "linker: $LINKER"
+            test -x "$LINKER" && echo "linker: present" || echo "linker: MISSING"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          test -x "$LINKER"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LINKER"
+          export CC_aarch64_linux_android="$LINKER"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          cargo build --release --locked --target aarch64-linux-android 2>&1 | tee build.log
+      - name: Diagnostics
+        if: failure()
+        run: |
+          {
+            echo "### Build log (tail)"
+            echo '```'
+            tail -40 build.log 2>/dev/null || echo "(no build.log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Collect
-        # cargo-ndk nests output under <out>/<triple>/, so flatten it and give
-        # the file a release-friendly name.
         run: |
           mkdir -p flat
-          find dist -name nano-vanity -type f -exec cp {} flat/nano-vanity-android-arm64 \;
+          cp target/aarch64-linux-android/release/nano-vanity flat/nano-vanity-android-arm64
+          chmod +x flat/nano-vanity-android-arm64
           file flat/nano-vanity-android-arm64
       - uses: actions/upload-artifact@v4
         with:
