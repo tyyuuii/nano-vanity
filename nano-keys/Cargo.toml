@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 blake2 = "0.10"
 curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
+tiny-keccak = { version = "2.0.2", features = ["k12"] }
 
 [dev-dependencies]
 hex = "0.4"

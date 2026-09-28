@@ -75,6 +75,9 @@ fn decode_char(c: u8) -> Option<u8> {
 /// `i.to_be_bytes()`. The choice only becomes visible for a non-zero index, so
 /// an index-0 test vector cannot detect the wrong byte order — see
 /// `index_is_big_endian` below.
+
+pub mod qubic;
+
 pub fn derive_private_key(seed: &[u8; 32], index: u32) -> [u8; 32] {
     let mut h = Blake2b::<U32>::new();
     h.update(seed);
