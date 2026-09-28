@@ -19,3 +19,7 @@
 *.seed
 *.key
 secrets.txt
+
+# Qubic research: reference material only, never vendored or compiled.
+research/qubic/vectors/node_modules/
+research/qubic/vectors/package-lock.json

@@ -1,0 +1,78 @@
+{
+  "vectors": [
+    {
+      "seed": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "subseed": "4453512f1ef597b365cc384f0a2b10ceb5c94f516b911acc8e8bc1b55e646c74",
+      "privateKey": "62506d370a4e9f42720269c0c973a544de0b6559bda46d1d8dd2fcda9fe4fada",
+      "publicKey": "1f590d03e613bdded38b4c0820ac44615f91af12435980b3ede3c08c315a2544",
+      "identity": "BZBQFLLBNCXEMGLOBHUVFTLUPLVCPQUASSILFABOFFBCADQSSUPNWLZBQEXK",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    },
+    {
+      "seed": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "subseed": "7746c6b3d57f02d4fb562d2ae62ce275a87918fbe31d302af76cfbcd45734f07",
+      "privateKey": "8b5c443793fd4ee0aac4e05eba66f253f566795f370af842f7d62ef6383f3fb4",
+      "publicKey": "69e68dc170cd9b6dda32b69490f5f71405c5c8d67012e96a86d3ff98ef915ec5",
+      "identity": "ZSDAHLHNHVWTEDYXRTTDWNKGRVPAFQKNTOUXPOXSCDGOPTMUJFWPVATFXHPG",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    },
+    {
+      "seed": "abababababababababababababababababababababababababababa",
+      "subseed": "70318cba81765ed1b1a5e2b058bea0aeac2b44c72129200417e4aa5d1b6d38b8",
+      "privateKey": "7122fa0cbecabdc8620fe92313c317527447a5088377392c7ebaf9bbe1710d90",
+      "publicKey": "2c7e5bdd9ad46d4929ce8068b35b8227e730ae07022377fee524151504d0099f",
+      "identity": "ORDJDHAOLGPLDCDFRSHAMZAERVDBPAENYMBVGUTDKHHLCLMAULIVHCQEQCVK",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    },
+    {
+      "seed": "lcehvbvddggkjfnokduyjuiyvkklrvrmsaozwbvjlzvgvfipqpnkkuf",
+      "subseed": "d3420abb5f3e0527b588b361fa0a513335833af8b4a4aae23a2958195c3209dc",
+      "privateKey": "11531fcea5e11a4a384e211165ff8bcf458595b32c5374ec76cfa1b1da102238",
+      "publicKey": "aa873e4cfd37e4bf528a2aa01eecef36547c99caaabd1bbdf7253a65b041771a",
+      "identity": "EPYWDREDNLHXOFYVGQUKPHJGOMPBSLDDGZDPKVQUMFXAIQYMZGEHPZTAAWON",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    },
+    {
+      "seed": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+      "subseed": "6d5393d90b348639b528a50f89702d980f7a84aa6fbb8af3305a07e827381bc5",
+      "privateKey": "4c9279e57e9efafe5fd9b8174a5e01ab39dd0aec561e643bea32608dcb85803d",
+      "publicKey": "8f07ede228754da497262b934366404ab89d4ca73d38edb605675498c4c47429",
+      "identity": "BZVYNEUTPXQBUEDENLWEXKSCTBECIAQOWPOETKHDIFNCXJEDIENYWHFBAZPM",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    },
+    {
+      "seed": "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm",
+      "subseed": "c5b50626b18d3e686b1a9381e1ca9c175a3d1d6df44b0a74a35b857714a6459f",
+      "privateKey": "d0c0339033eb85483749ef46eaca4cb7f82d7ccec202105f715c2710264b0e5e",
+      "publicKey": "5e1c1146149c8444fb98979f4305b10e95273b5bfb0137f71b1757440a62ffdd",
+      "identity": "AFRXCAJVXLETZBTWTCJREEXDLCLARUTUXAHKHVKREHTCJKUMDGKWIQLGDNKO",
+      "roundTrip": true,
+      "checksumOk": true,
+      "identityLen": 60
+    }
+  ],
+  "contracts": [
+    {
+      "index": 1,
+      "identity": "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARMID"
+    },
+    {
+      "index": 2,
+      "identity": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACNKL"
+    },
+    {
+      "index": 4,
+      "identity": "EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVWRF"
+    }
+  ]
+}
