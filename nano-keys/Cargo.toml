@@ -1,0 +1,13 @@
+[package]
+name = "nano-keys"
+version = "0.1.0"
+edition = "2021"
+description = "Nano (XNO) key derivation: seed -> private key -> public key -> address"
+license = "MIT"
+
+[dependencies]
+blake2 = "0.10"
+curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
+
+[dev-dependencies]
+hex = "0.4"

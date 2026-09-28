@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Local build tuning. This pins `jobs = 2` to keep Android's LMK from killing
+# rustc, which is right on a phone but would halve build time for everyone
+# cloning the repo on a desktop. Keep it out of version control; recreate it
+# locally on Termux (see README).
+/.cargo/
+
+# Agent / editor scratch
+.pi/
+*.swp
+.DS_Store
+
+# Never commit wallet material. This tool prints seeds and private keys; if a
+# transcript, log or shell capture of one ever lands here it must not be
+# published by accident.
+*.seed
+*.key
+secrets.txt

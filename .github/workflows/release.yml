@@ -1,0 +1,122 @@
+name: Release
+
+# Binaries are cut automatically from a version tag:
+#     git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build a release for (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux x86_64 (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Build
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - name: Collect
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/nano-vanity dist/nano-vanity-linux-amd64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: dist/
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Collect
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/nano-vanity.exe dist/nano-vanity-windows-amd64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: dist/
+
+  android:
+    name: Android aarch64 (Termux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      # The Android target has no system linker of its own; the NDK supplies
+      # the sysroot and the cross-linker. Everything in the dependency tree is
+      # pure Rust, so this is only ever needed to link.
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build
+        run: cargo ndk -t arm64-v8a -o dist build --release --locked
+      - name: Collect
+        # cargo-ndk nests output under <out>/<triple>/, so flatten it and give
+        # the file a release-friendly name.
+        run: |
+          mkdir -p flat
+          find dist -name nano-vanity -type f -exec cp {} flat/nano-vanity-android-arm64 \;
+          file flat/nano-vanity-android-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-arm64
+          path: flat/
+
+  release:
+    name: Publish release
+    needs: [linux, windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Assemble and checksum
+        run: |
+          mkdir dist
+          find artifacts -type f -name 'nano-vanity-*' -exec cp {} dist/ \;
+          cd dist
+          ls -l
+          sha256sum nano-vanity-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists; replacing its assets."
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" dist/* \
+            --title "nano-vanity $TAG" \
+            --generate-notes
+          gh release view "$TAG" --json url --jq .url
