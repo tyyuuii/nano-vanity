@@ -1000,7 +1000,7 @@ mod tests {
         // A prefix this long will not finish, so cancelling is the only exit.
         let job = Job::start(
             "111111111111".into(),
-            2,
+            1,
             None,
             TEST_SEED,
             1,
@@ -1030,7 +1030,7 @@ mod mode_tests {
     const S: [u8; 32] = [0x5a; 32];
 
     fn grind(mode: MatchMode, pattern: &str) -> Vec<engine::Found> {
-        let job = Job::start(pattern.to_string(), 4, Some(60), S, 1, false, mode, None)
+        let job = Job::start(pattern.to_string(), 2, Some(60), S, 1, false, mode, None)
             .unwrap_or_else(|e| panic!("{mode:?} {pattern} rejected: {e}"));
         match job.wait_timeout(Duration::from_secs(90)) {
             Some(Outcome::Found(f)) => f,
@@ -1101,9 +1101,12 @@ mod grind_tests {
     const S: [u8; 32] = [0x5b; 32];
 
     fn grind(prefix: &str, index: u32, want: usize, limit: u64) -> Vec<Found> {
+        // One thread on purpose. The engine's results are independent of thread
+        // count, and there is a dedicated test for that; four workers here only
+        // burn CPU and oversubscribe a small runner.
         let job = Job::start_grinding(
             prefix.to_string(),
-            4,
+            1,
             Some(limit),
             S,
             want,
@@ -1227,7 +1230,7 @@ mod seed_reachability_tests {
     fn capped_search_returns_an_address_a_wallet_can_walk_to() {
         let job = Job::start(
             "11".into(),
-            4,
+            1,
             Some(60),
             S,
             1,
@@ -1271,7 +1274,7 @@ mod seed_reachability_tests {
     fn uncapped_search_is_not_silently_truncated() {
         let job = Job::start(
             "11".into(),
-            4,
+            1,
             Some(60),
             S,
             1,
@@ -1383,7 +1386,7 @@ mod seed_reachability_tests {
         // enough; a long one would just make this a speed test.
         let job = Job::start(
             "1fa".into(),
-            4,
+            1,
             Some(60),
             S,
             1,
@@ -1427,9 +1430,11 @@ mod reporting_tests {
         max_index: Option<u32>,
         limit: Option<u64>,
     ) -> (std::sync::Arc<Job>, Outcome) {
+        // 2 threads: the timeout cases deliberately burn their entire wall-clock
+        // limit, so every extra worker is CPU spent for nothing.
         let job = Job::start(
             pattern.to_string(),
-            4,
+            2,
             limit,
             S,
             1,

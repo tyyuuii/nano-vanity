@@ -1096,11 +1096,17 @@ mod tests {
             .expect("should finish");
         assert_json_ok(&status_json(&done), "found");
 
-        // exhausted, covering the capped and timed-out variants
+        // Exhausted, covering the variants that can actually occur.
+        //
+        // There is deliberately no "no cap, no time limit" case. That would
+        // mean scanning the whole 2^32 index space, which no test can reach, so
+        // in practice every uncapped run ends in the time limit below and this
+        // loop would duplicate it -- while burning its entire limit grinding a
+        // pattern long enough to be unfindable. It was 30 of the suite's 33
+        // seconds for zero extra coverage.
         for (label, max_index, limit) in [
             ("capped", Some(50u32), Some(30)),
             ("timeout", None, Some(1)),
-            ("plain", None, Some(30)),
         ] {
             let j = Job::start(
                 "1fadgi".into(),
