@@ -94,13 +94,18 @@ pub fn hex_upper(bytes: &[u8]) -> String {
 /// believe they owned the address. A random seed per run removes both problems:
 /// every run yields a different address, and the key cannot be derived from the
 /// prefix alone.
+/// 32 bytes of entropy from the operating system's CSPRNG.
+///
+/// This used to read `/dev/urandom` directly, which works on Linux, macOS and
+/// Android but **does not exist on Windows** -- so the published Windows binary
+/// failed with "cannot open /dev/urandom" whenever it defaulted to a fresh
+/// seed, which is the normal case. Hand-rolling `BCryptGenRandom` FFI instead
+/// would mean untested `unsafe` in a tool that generates wallet keys, so this
+/// uses the audited `getrandom` crate, which is a thin binding over the right
+/// syscall per platform.
 pub fn random_seed() -> Result<[u8; 32], String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open("/dev/urandom")
-        .map_err(|e| format!("cannot open /dev/urandom: {e}"))?;
     let mut seed = [0u8; 32];
-    f.read_exact(&mut seed)
-        .map_err(|e| format!("short read from /dev/urandom: {e}"))?;
+    getrandom::fill(&mut seed).map_err(|e| format!("cannot read system randomness: {e}"))?;
     Ok(seed)
 }
 

@@ -1113,11 +1113,17 @@ mod grind_tests {
         )
         .unwrap();
         match job
-            .wait_timeout(Duration::from_secs(120))
+            .wait_timeout(Duration::from_secs(300))
             .expect("should finish")
         {
             Outcome::Found(f) => f,
-            Outcome::Exhausted => Vec::new(),
+            // Turning a timeout into an empty Vec made a slow runner look like
+            // "no match exists", which is a completely different bug. Say which
+            // one actually happened.
+            Outcome::Exhausted => panic!(
+                "grind({prefix:?}, index {index}) returned no result: the search was \
+                 cut off by its time limit rather than exhausting the space"
+            ),
         }
     }
 
@@ -1343,8 +1349,10 @@ mod seed_reachability_tests {
     }
 
     fn format_found_probe() -> String {
+        // Short pattern on purpose: this probe only needs *a* result to format,
+        // so it should not depend on how fast the machine grinds.
         let job = Job::start(
-            "1fad".into(),
+            "1fa".into(),
             2,
             Some(30),
             [0x11u8; 32],
@@ -1371,9 +1379,10 @@ mod seed_reachability_tests {
     /// plus index restores a high-index address with no walking.
     #[test]
     fn result_always_explains_seed_plus_index_restore() {
-        // A long prefix forces a large index.
+        // The advice no longer branches on the index, so a short pattern is
+        // enough; a long one would just make this a speed test.
         let job = Job::start(
-            "1fad".into(),
+            "1fa".into(),
             4,
             Some(60),
             S,
