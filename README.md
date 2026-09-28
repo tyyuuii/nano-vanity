@@ -373,7 +373,7 @@ Design choices that make the output verifiable:
 - Addresses are re-validated by a checksum-checking decoder, and the encoder is
   verified in both directions.
 
-## Performance (measured on a Snapdragon-class 8-core Android device)
+## Performance (measured on a Huawei Kirin 710, 8-core)
 
 | Threads | addr/s | Scaling |
 |---|---|---|
