@@ -1,0 +1,85 @@
+nano-vanity
+Copyright (c) 2026 nano-vanity contributors
+
+This project is licensed under the MIT License; see LICENSE.
+
+================================================================================
+Third-party acknowledgement: Nault
+================================================================================
+
+The Nano key derivation implemented in `nano-keys` was written in Rust from the
+published Nano specification and the published test vectors. No code was copied
+from any other project.
+
+Nault (https://github.com/Nault/Nault, https://nault.cc) was nevertheless the
+decisive reference while validating it, and this project owes it a debt. Two
+findings came directly from reading its source, and neither could be settled
+from the specification alone:
+
+1.  The Ed25519 expansion hash.
+
+    A Nano private key is expanded to a signing scalar by hashing it. Standard
+    Ed25519 — and therefore `tweetnacl`, which Nault's `package.json` lists as a
+    dependency — uses SHA-512 for this step. The Nano specification uses
+    Blake2b-512. These produce entirely different public keys from the same
+    input, and both are "Ed25519-shaped", so the mistake is invisible without
+    an external check.
+
+    Nault's `package.json` is misleading here: the `nacl` it actually uses is
+    not the npm package. `src/app/services/util.service.ts` resolves it as
+    `window['nacl']`, which is loaded by a vendored fork at
+    `src/assets/lib/tweetnacl/nacl.js`. That fork contains Blake2b and contains
+    no SHA-512 anywhere, and its `derivePublicFromSecret` does exactly
+    `blake2b(sk, 64)` followed by the standard clamp. That is what confirmed
+    Blake2b-512 is correct and that the dependency list cannot be trusted to
+    describe the code.
+
+2.  The account index byte order.
+
+    `generateAccountSecretKeyBytes` builds the index suffix with
+    `hexToUint8(decToHex(accountIndex, 4))`, and `decToHex` pads on the *left*.
+    That makes the index big-endian, matching docs.nano.org. This matters
+    enormously: the account index is the one place where a plausible-looking
+    bug produces a perfectly valid Nano address with a correct checksum that
+    the user's seed will never regenerate. See ERRATA.md section 7.
+
+Nault's source was also the explanation for a wallet behaviour that is not a bug
+in this tool: `scanAccounts` in `wallet.service.ts` keeps only accounts that are
+already used on the ledger, so importing a seed containing a brand-new empty
+account appears to do nothing.
+
+Nault is distributed under the MIT License:
+
+    MIT License
+
+    Copyright (c) 2020 The Nano Community
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+================================================================================
+Specifications and vectors
+================================================================================
+
+The derivation and the test vectors come from the Nano documentation:
+
+    https://docs.nano.org/integration-guides/key-management/
+    https://docs.nano.org/integration-guides/the-basics/
+
+The Nano address alphabet and base-32 encoding are defined by the protocol and
+are reimplemented here, not copied.

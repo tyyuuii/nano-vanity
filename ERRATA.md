@@ -150,11 +150,49 @@ malformed address cannot silently lose bits in the accumulator.
 
 ---
 
+## 6a. The expansion hash: check the vendored code, not `package.json`
+
+A Nano private key is expanded into an Ed25519 signing scalar by hashing it and
+clamping the first 32 bytes. The spec says **Blake2b-512**. Standard Ed25519 says
+**SHA-512**. Both produce a valid curve point from a valid private key, so the
+wrong one is completely invisible: the address is well-formed, the checksum is
+correct, and the key is spendable — it is simply not the account the seed
+derives.
+
+This is where reading an actual shipping wallet earned its keep, and it nearly
+went the other way. Nault lists `tweetnacl` in `package.json`, and
+`tweetnacl`'s `sign.keyPair.fromSecretKey` is SHA-512. Taken at face value that
+says Nault uses SHA-512, and therefore that Blake2b-512 is wrong.
+
+That reading is a trap. Nault never imports the npm package — `util.service.ts`
+resolves `const nacl = window['nacl']`, and `index.html` loads
+`src/assets/lib/tweetnacl/nacl.js`, a vendored fork sitting in a directory named
+`tweetnacl`. Inside it:
+
+    var context = blake2bInit(64);
+    blake2bUpdate(context, sk);
+    d = blake2bFinal(context);
+    d[0] &= 248;  d[31] &= 127;  d[31] |= 64;
+
+It calls Blake2b, and the file contains no SHA-512 at all. The directory name and
+the dependency list are both misleading; only the code is authoritative.
+
+The general lesson, and the reason `research/cross_check.py` re-derives results
+from a second implementation rather than restating the first: **a dependency
+list describes intent, not behaviour.** Verify the code path that actually runs.
+
+---
+
 ## 7. The account index is **big-endian**, and little-endian nearly shipped
 
 `docs.nano.org` states the index is "a 32-bit big-endian unsigned integer".
 `nanopy` uses `byteorder="big"`; `nanopyrs` uses `i.to_be_bytes()`. The first
 implementation used `index.to_le_bytes()`.
+
+Confirmed independently against a shipping wallet: Nault's
+`generateAccountSecretKeyBytes` builds the suffix with
+`hexToUint8(decToHex(accountIndex, 4))`, and `decToHex` pads on the **left**, so
+Nault is big-endian too. See [`NOTICE`](NOTICE).
 
 This bug survived unusually long because **every vector then in the repo used
 index 0**, where both byte orders are identical — `0u32.to_be_bytes()` and

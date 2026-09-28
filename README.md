@@ -35,6 +35,34 @@ mv nano-vanity-android-arm64 $PREFIX/bin/nano-vanity && chmod +x $PREFIX/bin/nan
 sudo install -m 755 nano-vanity-linux-amd64 /usr/local/bin/nano-vanity
 ```
 
+## Acknowledgements
+
+The derivation in [`nano-keys`](nano-keys/src/lib.rs) is written in Rust from
+the published Nano specification and validated against the published test
+vectors. No code was copied from another project — but **[Nault](https://nault.cc)**
+([source](https://github.com/Nault/Nault)) was the decisive reference while
+checking it, and this project would have shipped a wrong answer without it.
+
+Specifically, reading Nault settled two things the specification alone could
+not:
+
+- **The expansion hash is Blake2b-512, not SHA-512.** Standard Ed25519, and so
+  `tweetnacl` — which Nault's `package.json` lists as a dependency — uses
+  SHA-512. But the `nacl` Nault actually uses is not that package: it is
+  `window['nacl']`, loaded from a vendored fork whose
+  `derivePublicFromSecret` does `blake2b(sk, 64)` plus a clamp, and which
+  contains no SHA-512 at all. Trusting the dependency list over the code would
+  have produced entirely different, equally plausible-looking addresses.
+- **The account index is big-endian.** `generateAccountSecretKeyBytes` builds
+  the index with `decToHex(accountIndex, 4)`, which pads on the left.
+
+Nault also explained why importing a seed that holds a brand-new empty account
+appears to do nothing: `scanAccounts` keeps only accounts already used on the
+ledger.
+
+Nault is MIT licensed, © 2020 The Nano Community. Full attribution is in
+[`NOTICE`](NOTICE).
+
 ## Crates
 
 | Crate | Kind | Purpose |
@@ -379,6 +407,7 @@ nano-vanity/
 ├── README.md             # usage, cost table, measured performance
 ├── INSTALL.md            # install guides: Termux, Ubuntu, Windows
 ├── LICENSE               # MIT
+├── NOTICE                # third-party attribution: Nault
 ├── NANO_VANITY_PLAN.md   # corrected project plan
 ├── ERRATA.md             # what the common recipe gets wrong, and the evidence
 ├── nano-keys/            # library: seed -> key -> public key -> address
