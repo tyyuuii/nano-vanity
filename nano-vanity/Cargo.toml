@@ -1,6 +1,6 @@
 [package]
 name = "nano-vanity"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Multi-threaded CPU vanity address grinder for Nano (XNO)"
 license = "MIT"

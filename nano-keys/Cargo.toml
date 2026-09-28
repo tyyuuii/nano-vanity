@@ -1,6 +1,6 @@
 [package]
 name = "nano-keys"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Nano (XNO) key derivation: seed -> private key -> public key -> address"
 license = "MIT"
