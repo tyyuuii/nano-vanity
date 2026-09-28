@@ -375,3 +375,223 @@ It is not reachable as a small patch:
 **Conclusion.** ~60k addr/s is the real ceiling for dalek 4.1.3 on this SoC.
 The remaining levers are a NEON fork (blocked upstream for 3+ years) or
 vendoring dalek to hand-roll batch compression. Neither is a small change.
+
+---
+## 9. GPU acceleration on this device: measured, and it loses
+
+The `gpu-test` branch investigated a Vulkan compute backend. Phase 0 was a
+one-day throughput gate, built specifically so that one day of measurement
+would decide whether three to five weeks of kernel work was worth doing. It
+was, and the answer was no. The project stopped at the gate.
+
+### What was measured
+
+Device: Huawei Kirin 710, Arm **Mali-G51 MP2** (Bifrost, 2018), paired with
+4x Cortex-A73 @ 2.36 GHz and 4x Cortex-A53.
+
+Both sides ran the same register-resident kernel -- `acc = acc * acc + b`,
+across 16 independent chains -- counted in identical units of one 32-bit
+multiply plus one 32-bit add. The GPU ran it as a Vulkan compute shader; the
+CPU ran it as hand-written NEON.
+
+| | lane-ops/s |
+|---|---|
+| Mali-G51, sustained peak (16 chains, workgroup 128) | 2.06e10 |
+| 1x Cortex-A73, peak (8 lanes) | 3.26e9 |
+| 8 CPU cores, generous assumption (all at A73 speed) | 2.61e10 |
+
+Stable to within 2% across three full sweeps, so this is not a lucky run. The
+GPU figure was also taken at four dispatch sizes up to 0.79 s to rule out a
+clock-boost artifact: it plateaus at ~2.1e10 and does not improve under
+sustained load, so that is its real sustained rate, not an idle-clock number.
+
+### A methodology note, because it cut against the conclusion
+
+The first version of this benchmark reported the GPU at **3.0x a core and
+13x**, and a naive reading of that would have said "worth trying". It was
+wrong, twice over:
+
+1. The CPU side read a 256 KB buffer inside its inner loop while the GPU side
+   did a large job, so it was comparing a big job against a small one. The
+   loop is now register-resident on both sides, doing identical work.
+2. After that fix the NEON baseline still looked slow, because it indexed a
+   `Vec` and paid bounds checks in the hot loop. Removing that made the CPU
+   **2x faster** (1.6e9 -> 3.3e9 lane-ops/s) and the GPU correspondingly
+   **worse**.
+
+Both corrections moved the result *against* the GPU. A negative result should
+be reported from the strongest opponent, so the numbers below use the fast
+NEON version, not the flattering one.
+
+### Why 6.3x over one core is not a win
+
+The GPU is 6.3x a single core, which sounds substantial. It is not, for two
+reasons.
+
+1. **The phone has 8 cores, not 1.** Against the whole CPU the GPU manages
+   **0.79x** -- it is already *slower* than the existing 8-thread path on raw
+   integer op rate, before any penalty at all. And that is deliberately
+   generous, because 4 of the 8 cores are A53, which are substantially slower
+   than A73.
+
+2. **The GPU has no 64-bit integers.** `subgroup ops` reports `0x1` (BASIC
+   only), and the device offers no `shader_int64`. A 64x64 field multiply must
+   be decomposed into 32-bit pieces, costing roughly 2x to 4x more integer
+   operations than the same multiply on the CPU.
+
+Applying that penalty:
+
+| Assumption | GPU vs 8-core CPU |
+|---|---|
+| no penalty (raw op rate) | 0.79x |
+| 2x operation penalty (optimistic) | **0.39x** |
+| 4x operation penalty | **0.20x** |
+
+All of them are below break-even -- and that is *before* accounting for the
+fact that a real field-arithmetic kernel typically reaches only 50-70% of the
+rate of a synthetic multiply-accumulate loop, once register pressure, carry
+chains and base-table lookups are in the picture. The realistic figure is
+well under 0.2x.
+
+### Conclusion
+
+A Vulkan Ed25519 kernel on this GPU would be roughly **2.5x to 5x slower**
+than the existing 8-thread CPU path. The 32-bit-only arithmetic model does not
+merely cancel the parallelism advantage -- the raw op rate is already behind
+before it is even applied.
+
+The useful finding is not "GPUs are bad". It is that on a 2018 dual-core mobile
+GPU, the absence of 64-bit integer support is not a detail to engineer around
+-- it is the whole answer. What would change the result is `shader_int64` or
+many more compute cores, and neither is reachable by writing better code.
+
+This also retroactively justifies the CPU ceiling above: the alternative to
+dalek's generic 64-bit code is a NEON implementation, not a GPU. The NEON path
+reuses the same arithmetic, carries no driver layer, and keeps one
+implementation to trust. It is now the only remaining lever, and this result
+says it is the right one.
+
+### Reproducing
+
+```sh
+cargo run --release --example gpu_probe    # device, limits, subgroup properties
+sh nano-vanity/shaders/sweep.sh            # chain x workgroup sweep, both sides
+```
+
+All of it lives on the `gpu-test` branch. `main` is unchanged.
+
+### Vulkan gotchas found along the way
+
+Recorded because they are Android-specific and cost real time:
+
+- Android ships `/system/lib64/libvulkan.so` but **not** `libvulkan.so.1`,
+  which is what `ash::Entry::load()` tries by default. Load by absolute path.
+- The `_khr` alias for `get_physical_device_properties2` is absent even though
+  the device reports Vulkan 1.1. Using the KHR wrapper **aborts the process**,
+  because ash resolves extern function pointers eagerly and cannot unwind out
+  of them. The core 1.1 entry point works, but only when the instance is
+  created with `api_version = 1.1`; asking for 1.0 leaves the pointer unloaded.
+- `subgroup stages` is reported as `0x30`, which decodes to tessellation and
+  geometry, not compute. The driver fills this struct nonsensically. Treat
+  driver-reported properties as a hint, never as a fact.
+- `timestampPeriod` is 0, so GPU-side timestamps are unusable. Throughput must
+  be measured as wall clock around submit plus fence wait.
+
+---
+
+## 10. Why the CPU is slow: measured breakdown, and three ideas already closed
+
+Section 9 closed the GPU. This section records what the CPU is actually
+spending time on, so the next optimisation attempt starts from measurements
+rather than from the assumption that hashing is the problem. It is not.
+
+### The breakdown
+
+`cargo run --release --example breakdown -p nano-keys`, 20,000 iterations:
+
+| Operation | ns/op | share of the loop |
+|---|---|---|
+| `blake2b-512` (scalar expand) | 372.3 | 0.5% |
+| `Scalar::from_bytes_mod_order` | 174.8 | 0.2% |
+| **basepoint multiply** | **62,179.2** | **78.5%** |
+| `compress()` + `to_bytes` | 16,482.8 | 20.8% |
+| **total** | **79,209.1** | |
+
+Hashing and scalar reduction are together **0.7%**. Any proposal to speed up
+Blake2b, batch the hashing, or move it to another core is optimising something
+that cannot matter.
+
+### Three ideas, tested and closed
+
+Recorded so nobody spends the effort again.
+
+**1. Upgrade `curve25519-dalek` 4.1.3 -> 5.0.0. No win.**
+`dalek_ab.rs`, 6,000 iterations each:
+
+```
+4.1.3  basepoint multiply      74798.4 ns/op
+5.0.0  basepoint multiply      74809.3 ns/op
+multiply speedup                    1.000x
+compress speedup                    1.000x
+```
+
+Dalek's 5.0 changelog advertises "automatic serial backend selection between
+u32 and u64" and "maximum available NAF window size in
+VartimePrecomputedStraus". On aarch64 both are no-ops. The two versions were
+also verified to agree bit-for-bit, so this is a performance no-op rather than
+a silently different implementation.
+
+**2. "The default 32-bit field backend must be the problem." Wrong.**
+dalek 4.1.3 has no `radix_51` feature; the backend is chosen by
+`--cfg curve25519_dalek_bits`, and `build.rs` already resolves 64-bit
+targets to `DalekBits::Dalek64`. We were never on the 32-bit backend. Note
+dalek's own `build.rs` carries a `TODO(Arm): needs tests + benchmarks to back
+this up` -- `dalek_ab.rs` is that benchmark, for a six-year-old Cortex-A73.
+
+**3. Wider basepoint comb tables. Real idea, unreachable API.**
+dalek 5.0 ships tables trading bytes for point additions:
+
+| table | size | additions |
+|---|---|---|
+| `EdwardsBasepointTable` (radix 16, default) | 30KB | 64 |
+| `EdwardsBasepointTableRadix64` | 120KB | 43 |
+| `EdwardsBasepointTableRadix128` | 240KB | 37 |
+| `EdwardsBasepointTableRadix256` | 480KB | 33 |
+
+Fewer additions is strictly less field multiplication, so this is the one
+genuinely promising idea in this section. But `BasepointTable` and
+`EdwardsPoint::mul_by_pow_2` are both `pub(crate)`, so the tables cannot be
+constructed outside the crate, and a hand-rolled comb hits the same wall.
+Reaching it means vendoring dalek, which is a large maintenance and
+supply-chain commitment for an unknown payoff on a phone with a small L2.
+Recorded as a step-3 option in `PLAN.md`, not as a recommendation.
+
+The blocker is directly reproducible, which is why no benchmark script is
+checked in for it. Attempting to construct any of these tables from outside
+the crate fails to compile:
+
+```
+error[E0603]: trait `BasepointTable` is private
+error[E0599]: no associated function or constant named `create` found for
+              struct `EdwardsBasepointTableRadix64`
+error[E0599]: no method named `basepoint` found for reference
+              `&'static EdwardsBasepointTable`
+```
+
+A compile error is stronger evidence of a closed door than a script that
+returns zero, so the benchmark that proved it was removed rather than kept in
+a non-compiling state. `dalek_ab.rs`, which *does* compile, is kept.
+
+### What is left
+
+The multiply at 78.5% is the only thing worth attacking, and dalek's field
+arithmetic is generic 64-bit limb code with no aarch64 vectorisation. That is
+the remaining lever, and it is a real implementation job rather than a
+configuration change. See `PLAN.md`.
+
+One observation worth recording: `compress()` is 20.8%, and a **prefix** match
+never needs it. The address body is 255 bits of y followed by 1 bit of the
+sign of x, and that sign bit is the *last* bit, so it can only ever affect a
+suffix. Skipping it for prefix mode, and amortising the normalisation with
+`AffineNielsPoint::batch_invert`, is worth a measured **1.25x** with no new
+dependency. Suffix and contains modes must keep `compress()` and gain nothing.

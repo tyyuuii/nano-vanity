@@ -11,3 +11,7 @@ curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
 
 [dev-dependencies]
 hex = "0.4"
+# Temporary: a side-by-side A/B of the two dalek majors on this device. Both
+# versions of the same crate are linkable at once because the 5.x one is
+# renamed. Remove once the answer is known and the winner is adopted.
+dalek5 = { package = "curve25519-dalek", version = "5", features = ["precomputed-tables"] }

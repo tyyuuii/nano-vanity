@@ -13,8 +13,6 @@ path = "src/main.rs"
 getrandom = "0.4.3"
 nano-keys = { path = "../nano-keys" }
 
-# Phase 0 spike only, and only on the gpu-test branch. Not a dependency of the
-# main binary yet: the release build must stay GPU-free until Phase 2 proves a
-# Vulkan kernel can be bit-identical to curve25519-dalek.
+# ash and the Vulkan spike were removed: the Mali-G51 measured below break-even
+# against the 8-core CPU, so GPU work is closed. See ERRATA.md section 9.
 [dev-dependencies]
-ash = "0.38"
