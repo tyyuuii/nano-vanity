@@ -26,8 +26,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The suite performs real searches, so give it room on slower runners.
+      # Output is teed to a log and echoed into the step summary on failure,
+      # because run logs need admin rights to download and this repo's failures
+      # are otherwise undiagnosable from outside.
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked 2>&1 | tee test.log
+      - name: Diagnostics
+        if: failure()
+        run: |
+          {
+            echo "### Test failure"
+            echo '```'
+            grep -E '^(test |failures:|error|thread )' -A 3 test.log | head -60 || true
+            echo '```'
+            echo 'Full output:'
+            echo '```'
+            tail -60 test.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   clippy:
     name: Clippy and format

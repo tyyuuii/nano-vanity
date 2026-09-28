@@ -120,11 +120,17 @@ jobs:
     needs: [linux, windows, android]
     runs-on: ubuntu-latest
     steps:
+      # Full history: `gh release create` shells out to git to resolve the tag,
+      # and the default shallow checkout leaves it unable to.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
       - name: Assemble and checksum
         run: |
+          set -euxo pipefail
           mkdir dist
           find artifacts -type f -name 'nano-vanity-*' -exec cp {} dist/ \;
           cd dist
@@ -134,14 +140,27 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+          {
+            echo "### Release"
+            echo '```'
+            echo "tag: $TAG"
+            echo "repo: $GH_REPO"
+            ls -l dist || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG exists; replacing its assets."
             gh release delete "$TAG" --yes --cleanup-tag
           fi
+          # Notes are written out rather than using --generate-notes, which
+          # needs commit history and adds nothing here.
           gh release create "$TAG" dist/* \
             --title "nano-vanity $TAG" \
-            --generate-notes
-          gh release view "$TAG" --json url --jq .url
+            --notes "Prebuilt binaries. See INSTALL.md for install guides and SHA256SUMS for verification."
+      - name: Diagnostics
+        if: failure()
+        run: echo "Release step failed; see the run log for the gh error." >> "$GITHUB_STEP_SUMMARY"
