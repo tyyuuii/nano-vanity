@@ -17,6 +17,12 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The steps below are bash. Without this, `run:` defaults to PowerShell on
+    # windows-latest, which cannot parse `set -o pipefail` and fails before
+    # cargo is ever invoked. Git Bash ships on the Windows runner image.
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
