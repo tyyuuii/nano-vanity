@@ -12,7 +12,3 @@ path = "src/main.rs"
 [dependencies]
 getrandom = "0.4.3"
 nano-keys = { path = "../nano-keys" }
-
-# ash and the Vulkan spike were removed: the Mali-G51 measured below break-even
-# against the 8-core CPU, so GPU work is closed. See ERRATA.md section 9.
-[dev-dependencies]

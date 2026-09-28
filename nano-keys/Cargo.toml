@@ -11,7 +11,8 @@ curve25519-dalek = { version = "4", features = ["precomputed-tables"] }
 
 [dev-dependencies]
 hex = "0.4"
-# Temporary: a side-by-side A/B of the two dalek majors on this device. Both
-# versions of the same crate are linkable at once because the 5.x one is
-# renamed. Remove once the answer is known and the winner is adopted.
+# The 5.x major is linked alongside 4.x (under a rename) purely so that
+# `examples/dalek_ab.rs` can A/B them on the device. It measured 1.000x with
+# bit-identical output, so GPU-free CPU work has no reason to depend on it;
+# it is dev-only and never reaches the shipped binary. See ERRATA.md §10.
 dalek5 = { package = "curve25519-dalek", version = "5", features = ["precomputed-tables"] }
