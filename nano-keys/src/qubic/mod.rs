@@ -2,4 +2,7 @@
 
 pub mod fp;
 mod fp_vectors;
+pub mod fourq;
+pub mod identity;
 pub mod k12;
+mod tests_vectors;

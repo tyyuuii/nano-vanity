@@ -2,7 +2,7 @@
 name = "nano-keys"
 version = "0.1.1"
 edition = "2021"
-description = "Nano (XNO) key derivation: seed -> private key -> public key -> address"
+description = "Nano (XNO) and Qubic (Q) key derivation: seed -> private key -> public key -> address"
 license = "MIT"
 
 [dependencies]
