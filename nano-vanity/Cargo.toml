@@ -12,3 +12,9 @@ path = "src/main.rs"
 [dependencies]
 getrandom = "0.4.3"
 nano-keys = { path = "../nano-keys" }
+
+# Phase 0 spike only, and only on the gpu-test branch. Not a dependency of the
+# main binary yet: the release build must stay GPU-free until Phase 2 proves a
+# Vulkan kernel can be bit-identical to curve25519-dalek.
+[dev-dependencies]
+ash = "0.38"
