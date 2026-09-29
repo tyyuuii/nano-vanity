@@ -116,7 +116,7 @@ pub fn public_key_to_identity(public_key: &[u8; 32]) -> String {
     let ck = k12_32(public_key);
     let mut c = (ck[0] as u32) | ((ck[1] as u32) << 8) | ((ck[2] as u32) << 16);
     c &= 0x3FFFF;
-    for (i, slot) in id[56..60].iter_mut().enumerate() {
+    for slot in id[56..60].iter_mut() {
         *slot = b'A' + (c % 26) as u8;
         c /= 26;
     }
@@ -196,11 +196,11 @@ mod tests {
     #[test]
     fn golden_identities_round_trip_through_the_public_key() {
         for g in GOLDEN {
-            let pk = identity_to_public_key(&g.identity)
+            let pk = identity_to_public_key(g.identity)
                 .unwrap_or_else(|| panic!("could not decode {}", g.identity));
             assert_eq!(hx(&pk), g.public_key, "decode of {} lost data", g.identity);
             assert_eq!(public_key_to_identity(&pk), g.identity);
-            assert!(is_valid_identity(&g.identity));
+            assert!(is_valid_identity(g.identity));
         }
     }
 
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn leading_character_tracks_the_low_bytes_of_the_public_key() {
         let g = &GOLDEN[0];
-        let pk = identity_to_public_key(&g.identity).unwrap();
+        let pk = identity_to_public_key(g.identity).unwrap();
         // identity[0] is the least significant base-26 digit of pk[0..8] read
         // as a little-endian u64.
         let frag = u64::from_le_bytes(pk[0..8].try_into().unwrap());

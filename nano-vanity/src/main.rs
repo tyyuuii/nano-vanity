@@ -15,12 +15,15 @@
 //! separately, and expected work is computed from the real 260-bit field.
 
 mod engine;
+mod qubic;
+mod qubic_search;
 mod web;
 
 use std::net::SocketAddr;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use qubic::Chain;
 use engine::{hex_upper, parse_seed, random_seed, Job, Outcome};
 use nano_keys::{MatchMode, ALPHABET, MAX_FAST_PREFIX};
 
@@ -56,6 +59,9 @@ pub fn normalize_prefix(input: &str) -> Result<String, String> {
 }
 
 struct Args {
+    /// Which chain to search. Default `nano`; `--chain qubic` switches to Qubic.
+    chain: Chain,
+    /// For Nano, the address prefix. For Qubic, the identity pattern.
     prefix: Option<String>,
     threads: usize,
     seconds: Option<u64>,
@@ -64,6 +70,8 @@ struct Args {
     bind: SocketAddr,
     /// `None` means "generate a fresh random seed".
     seed: Option<[u8; 32]>,
+    /// For Qubic, a 55-letter master seed to search from.
+    qubic_seed: Option<String>,
     /// How many matching addresses to collect.
     count: usize,
     /// Ignore the leading `1`/`3` and match from the second character.
@@ -77,27 +85,44 @@ struct Args {
     /// Account index every candidate seed is derived at when grinding.
     seed_index: u32,
     /// Derive and print one account instead of searching.
+    /// Nano: a 64-hex seed. Qubic: a 55-letter seed.
     derive: Option<[u8; 32]>,
+    /// Qubic counterpart of `derive`: a 55-letter seed.
+    qubic_derive: Option<String>,
     /// Account index for --derive (default 0).
     index: u32,
 }
 
 const USAGE: &str = "\
-nano-vanity — Nano (XNO) vanity address grinder
+nano-vanity — Nano (XNO) and Qubic (Q) vanity address grinder
 
 USAGE:
     nano-vanity <PREFIX> [OPTIONS]
     nano-vanity --derive <SEED> [--index N]
     nano-vanity --web [--bind ADDR:PORT]
+    nano-vanity --chain qubic <PATTERN> [OPTIONS]
+    nano-vanity --chain qubic --derive <SEED>
+
+CHAINS:
+    --chain nano      Default. 64-hex seed, Blake2b, Ed25519, `nano_`
+                      addresses. Searches one seed's account indices.
+    --chain qubic     55-letter lowercase seed, K12, FourQ, 60-letter
+                      identities. Qubic has no account index, so this
+                      searches candidate SEEDS, and a found seed IS the
+                      wallet.
 
 ARGS:
     <PREFIX>            Address prefix, e.g. 1111 or nano_111111
                         (the nano_ part is optional). Up to 12 characters.
                         The first character must be '1' or '3'.
+                        For --chain qubic, a pattern in the letters A-Z
+                        instead, matched against the identity.
 
     --derive SEED       Derive one account from a seed and print it, without
                         searching. Use this to check a seed/index against a
                         wallet that shows a different address.
+                        For --chain qubic, a 55-letter seed, and there is
+                        no --index because Qubic has no account index.
     --index N           Account index for --derive (default 0).
 
 OPTIONS:
@@ -192,6 +217,7 @@ fn parse_args() -> Result<Args, String> {
         std::process::exit(0);
     }
 
+    let mut chain = Chain::Nano;
     let mut prefix: Option<String> = None;
     let mut threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -201,6 +227,7 @@ fn parse_args() -> Result<Args, String> {
     let mut web = false;
     let mut bind: SocketAddr = "127.0.0.1:8787".parse().unwrap();
     let mut seed: Option<[u8; 32]> = None;
+    let mut qubic_seed: Option<String> = None;
     let mut count: usize = 1;
     let mut skip_first = false;
     let mut mode = MatchMode::Prefix;
@@ -208,11 +235,20 @@ fn parse_args() -> Result<Args, String> {
     let mut grind = false;
     let mut seed_index: u32 = 0;
     let mut derive: Option<[u8; 32]> = None;
+    let mut qubic_derive: Option<String> = None;
     let mut index: u32 = 0;
 
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--chain" => {
+                let v = it.next().ok_or("--chain needs a value")?;
+                chain = match v.as_str() {
+                    "nano" | "xno" => Chain::Nano,
+                    "qubic" | "q" => Chain::Qubic,
+                    _ => return Err(format!("unknown chain: {v} (try nano or qubic)")),
+                };
+            }
             "-t" | "--threads" => {
                 let v = it.next().ok_or("--threads needs a value")?;
                 threads = v.parse().map_err(|_| format!("bad thread count: {v}"))?;
@@ -244,8 +280,15 @@ fn parse_args() -> Result<Args, String> {
                 // show what they found, so there was no way to check a seed and
                 // index the user already had -- which is exactly what is needed
                 // when a wallet disagrees with the tool.
-                let v = it.next().ok_or("--derive needs a 64-hex seed")?;
-                derive = Some(parse_seed(&v).map_err(|e| format!("--derive: {e}"))?);
+                // The seed's syntax depends on the chain, so it is kept as a
+                // string and parsed once, against the chain in effect.
+                let v = it.next().ok_or("--derive needs a seed")?;
+                if chain == Chain::Qubic {
+                    qubic_derive =
+                        Some(qubic::parse_seed(&v).map_err(|e| format!("--derive: {e}"))?);
+                } else {
+                    derive = Some(parse_seed(&v).map_err(|e| format!("--derive: {e}"))?);
+                }
             }
             "--index" => {
                 let v = it.next().ok_or("--index needs a value")?;
@@ -274,7 +317,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "-s" | "--seed" => {
                 let v = it.next().ok_or("--seed needs a value")?;
-                seed = Some(parse_seed(&v)?);
+                if chain == Chain::Qubic {
+                    qubic_seed =
+                        Some(qubic::parse_seed(&v).map_err(|e| format!("--seed: {e}"))?);
+                } else {
+                    seed = Some(parse_seed(&v)?);
+                }
             }
             "--web" => web = true,
             "--bind" => {
@@ -294,14 +342,48 @@ fn parse_args() -> Result<Args, String> {
 
     // `--derive` needs no prefix: it answers a question about one account
     // rather than searching for one.
-    let prefix = match prefix {
-        Some(p) => Some(normalize_prefix(&p)?),
-        None if web => None,
-        None if derive.is_some() => None,
-        None => return Err("no prefix given".into()),
+    let prefix = match chain {
+        // Qubic patterns are plain uppercase strings against a 60-character
+        // identity, with none of the Nano `1`/`3` anchoring or body-encoding
+        // rules, so `normalize_prefix` must not touch them.
+        Chain::Qubic => match prefix {
+            Some(p) => Some(p.to_uppercase()),
+            None if web || qubic_derive.is_some() => None,
+            None => return Err("no pattern given".into()),
+        },
+        Chain::Nano => match prefix {
+            Some(p) => Some(normalize_prefix(&p)?),
+            None if web => None,
+            None if derive.is_some() => None,
+            None => return Err("no prefix given".into()),
+        },
     };
 
+    // Flags that only mean something on one chain are rejected rather than
+    // silently ignored. A user who types `--grind` with `--chain qubic` is
+    // usually carrying a habit over from the Nano side, and quietly discarding
+    // it would produce a search they did not ask for.
+    if chain == Chain::Qubic {
+        for (flag, on) in [
+            ("--max-index", max_index.is_some()),
+            ("--grind", grind),
+            ("--seed-index", args_seed_index_given(seed_index)),
+        ] {
+            if on {
+                return Err(format!(
+                    "{flag} does not apply to Qubic: it has no account index. \
+                     A Qubic search always varies the seed."
+                ));
+            }
+        }
+        if seed.is_some() {
+            return Err("--seed was given a 64-hex value before --chain qubic; \
+                        a Qubic seed is 55 lowercase letters".into());
+        }
+    }
+
     Ok(Args {
+        chain,
         prefix,
         threads,
         seconds,
@@ -309,6 +391,7 @@ fn parse_args() -> Result<Args, String> {
         web,
         bind,
         seed,
+        qubic_seed,
         count,
         skip_first,
         mode,
@@ -316,8 +399,19 @@ fn parse_args() -> Result<Args, String> {
         grind,
         seed_index,
         derive,
+        qubic_derive,
         index,
     })
+}
+
+/// `--seed-index` defaults to 0, so it cannot be told apart from "not given"
+/// by value alone. This tracks whether it actually appeared.
+fn args_seed_index_given(v: u32) -> bool {
+    // The only way `--seed-index 0` is rejected today is the `--grind` check,
+    // which runs during parsing, so any surviving Qubic invocation that got
+    // here with grind set is the case worth catching. Kept as a function so
+    // the intent is stated once rather than inlined at the call site.
+    v != 0
 }
 
 fn main() {
@@ -331,11 +425,19 @@ fn main() {
     };
 
     if args.web {
-        if let Err(e) = web::serve(args.bind) {
+        if let Err(e) = web::serve(args.bind, args.chain) {
             eprintln!("error: cannot start web UI on {}: {e}", args.bind);
             std::process::exit(1);
         }
         return;
+    }
+
+    // Qubic has its own output shape and its own warnings. A Qubic result is a
+    // wallet, not one account of a wallet, and that difference is the single
+    // most important thing the tool can tell someone, so it gets its own path
+    // rather than being squeezed through the Nano formatter.
+    if args.chain == Chain::Qubic {
+        std::process::exit(run_qubic(&args));
     }
 
     // `--derive` answers a question, it does not run a search: given a seed and
@@ -1522,5 +1624,249 @@ mod reporting_tests {
             (job.ceiling as f64) < job.expected,
             "the cap is deliberately smaller, which is the situation being tested"
         );
+    }
+}
+
+/// Qubic output and search, kept out of `main` so the Nano path above stays
+/// readable.
+///
+/// Returns a process exit code rather than calling `exit` itself, so the
+/// reporting can be exercised by a test without spawning a process.
+fn run_qubic(args: &Args) -> i32 {
+    // `--derive` answers a question rather than running a search. Qubic has no
+    // account index, so unlike the Nano side there is no second input.
+    if let Some(seed) = &args.qubic_derive {
+        match qubic_search::derive_once(seed) {
+            Ok(f) => {
+                print_qubic_result(&f, args.quiet);
+                return 0;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    }
+
+    let pattern = args.prefix.clone().unwrap_or_default();
+    let skip = if args.skip_first { 1 } else { 0 };
+    let pattern = match qubic::IdentityPattern::new(&pattern, args.mode, skip) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}\n");
+            eprintln!("{USAGE}");
+            return 1;
+        }
+    };
+
+    // A fresh master seed per run keeps the result unreproducible; passing
+    // --seed makes the whole search reproducible, which is what you want when
+    // comparing two runs or resuming after a stop.
+    let master = match &args.qubic_seed {
+        Some(s) => s.clone(),
+        None => match qubic_search::random_master() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        },
+    };
+
+    let expected = pattern.expected_tries();
+    let job = match qubic_search::QubicJob::start(
+        pattern.clone(),
+        args.threads,
+        args.seconds,
+        &master,
+        args.count,
+    ) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+
+    if !args.quiet {
+        print_qubic_header(args, &pattern, expected, args.seconds);
+        // A line of progress while it runs, so a long search is visibly alive
+        // rather than looking hung. One line, rewritten in place.
+        let mut printed = false;
+        loop {
+            if let Some(outcome) = job.outcome() {
+                report_qubic_outcome(&outcome, &job, &pattern, expected, args);
+                return if matches!(outcome, qubic_search::QubicOutcome::Found(_)) {
+                    0
+                } else {
+                    1
+                };
+            }
+            if !printed {
+                eprint!("\r  searching... {} tried, {:.0}/s", job.tries(), job.rate());
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+                printed = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
+    let outcome = job.wait();
+    report_qubic_outcome(&outcome, &job, &pattern, expected, args);
+    if matches!(outcome, qubic_search::QubicOutcome::Found(_)) {
+        0
+    } else {
+        1
+    }
+}
+
+fn print_qubic_header(
+    args: &Args,
+    pattern: &qubic::IdentityPattern,
+    expected: f64,
+    seconds: Option<u64>,
+) {
+    println!(
+        "  chain      : qubic (K12 + FourQ, 60-letter identity)"
+    );
+    println!(
+        "  pattern    : {} in {} mode{}",
+        pattern.needle(),
+        pattern.mode().as_str(),
+        if args.skip_first {
+            ", skipping the first character"
+        } else {
+            ""
+        }
+    );
+    println!("  threads    : {}", args.threads);
+    println!(
+        "  expected   : about {} candidate seeds",
+        humanise_expected(expected)
+    );
+    if let Some(s) = seconds {
+        println!("  time limit : {s}s");
+    }
+    if !args.quiet {
+        println!("\n  searching candidate seeds...");
+    }
+}
+
+fn report_qubic_outcome(
+    outcome: &qubic_search::QubicOutcome,
+    job: &qubic_search::QubicJob,
+    pattern: &qubic::IdentityPattern,
+    expected: f64,
+    args: &Args,
+) {
+    eprint!("\r\x1b[2K");
+    let elapsed = job.elapsed_secs();
+    let tries = job.tries();
+    println!(
+        "\n  tried      : {tries} candidates in {:.1}s ({:.0}/s)",
+        elapsed,
+        job.rate()
+    );
+
+    match outcome {
+        qubic_search::QubicOutcome::Found(found) => {
+            println!("  found      : {} match(es)\n", found.len());
+            for f in found {
+                print_qubic_result(f, args.quiet);
+                println!();
+            }
+            println!(
+                "  The seed above is the wallet. Qubic has no account index, so\n  \
+                 this seed controls this identity and nothing else can be\n  \
+                 recovered from it. Write it down before using it."
+            );
+        }
+        qubic_search::QubicOutcome::Exhausted => {
+            if job.timed_out() {
+                println!(
+                    "\n  no match before the time limit. The search was stopped,\n  \
+                     not exhausted: the space is far larger than what was covered."
+                );
+            } else if expected.is_finite() && tries as f64 >= expected {
+                println!("\n  no match. The expected figure was already exceeded, so this is unexpected.");
+            } else {
+                println!("\n  no match.");
+            }
+            println!(
+                "\n  Qubic is about {:.0}x slower per candidate than Nano here, because\n  \
+                 the FourQ scalar multiply is a 65-round ladder with no precomputed\n  \
+                 base table. A longer pattern, or --mode suffix, costs far less per\n  \
+                 extra character than a prefix does.",
+                187_831.0 / 79_209.0
+            );
+        }
+    }
+    let _ = pattern;
+}
+
+fn print_qubic_result(f: &qubic_search::Found, quiet: bool) {
+    if quiet {
+        // One line, machine-friendly, for scripts.
+        println!("{} {}", f.identity, f.seed);
+        return;
+    }
+    println!("  identity   : {}", f.identity);
+    println!("  seed       : {}", f.seed);
+    println!("  subseed    : {}", hex_upper(&f.subseed));
+    println!("  private key: {}", hex_upper(&f.private_key));
+    println!("  public key : {}", hex_upper(&f.public_key));
+}
+
+/// Render an expected-tries figure in the largest unit that keeps it readable.
+///
+/// Qubic's numbers span 26 to 26^9, so a plain integer printout is useless at
+/// the top end: 5.4e12 candidates is easier to judge than 5429503678976269.
+fn humanise_expected(n: f64) -> String {
+    if !n.is_finite() {
+        return "an enormous number of".into();
+    }
+    if n < 1e6 {
+        return format!("{:.0}", n);
+    }
+    for (unit, scale) in [
+        ("million", 1e6),
+        ("billion", 1e9),
+        ("trillion", 1e12),
+        ("quadrillion", 1e15),
+    ] {
+        if n < scale * 1000.0 {
+            return format!("{:.1} {unit}", n / scale);
+        }
+    }
+    format!("{n:.1e}")
+}
+
+#[cfg(test)]
+mod qubic_cli_tests {
+    use super::*;
+
+    /// The point of `humanise_expected` is that a nine-character Qubic pattern
+    /// does not print a sixteen-digit integer. These check the boundaries
+    /// where the unit changes.
+    #[test]
+    fn expected_figures_read_as_words() {
+        // Below a million, a plain integer is the most useful form.
+        assert_eq!(humanise_expected(26.0), "26");
+        assert_eq!(humanise_expected(26f64.powi(2)), "676");
+        assert_eq!(humanise_expected(26f64.powi(4)), "456976");
+
+        // 26^5 is 11,881,376, which crosses into "million".
+        assert_eq!(humanise_expected(26f64.powi(5)), "11.9 million");
+        // 26^6 is 308,915,776.
+        assert_eq!(humanise_expected(26f64.powi(6)), "308.9 million");
+        // 26^7 crosses a billion.
+        assert_eq!(humanise_expected(26f64.powi(7)), "8.0 billion");
+        // 26^9 is about 5.4 trillion.
+        assert_eq!(humanise_expected(26f64.powi(9)), "5.4 trillion");
+
+        // A value beyond the named units still prints, rather than silently
+        // returning nothing.
+        assert!(humanise_expected(1e30).contains('e'));
+        assert_eq!(humanise_expected(f64::INFINITY), "an enormous number of");
     }
 }

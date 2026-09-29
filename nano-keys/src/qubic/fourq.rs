@@ -310,10 +310,11 @@ fn recode_scalar(k: &[u8; 32]) -> [i8; 65] {
     cond_add_order_n(&mut m);
 
     let mut d = [0i8; 65];
-    for i in 0..64 {
-        // Take the low 5 bits as a digit centred on zero.
-        d[i] = ((m[0] & 0x1f) as i64 - 16) as i8;
-        sub_div16(&mut m, d[i] as i64);
+    for digit in d.iter_mut().take(64) {
+        // Take the low 5 bits as a digit centred on zero, then divide the
+        // running value by 16 so the next digit comes from the next 4 bits.
+        *digit = ((m[0] & 0x1f) as i64 - 16) as i8;
+        sub_div16(&mut m, *digit as i64);
     }
     d[64] = ((m[0] & 0xff) as u8) as i8;
     d

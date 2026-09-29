@@ -32,7 +32,7 @@ pub fn k12_32(input: &[u8]) -> [u8; 32] {
 /// where they can be checked.
 #[inline]
 pub fn k12_n(input: &[u8], n: usize) -> ([u8; 32], usize) {
-    debug_assert!(n >= 1 && n <= 32);
+    debug_assert!((1..=32).contains(&n));
     let mut buf = [0u8; 32];
     let mut k = KangarooTwelve::new(b"");
     k.update(input);

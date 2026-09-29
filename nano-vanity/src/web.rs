@@ -19,9 +19,57 @@ use crate::engine::{self, Job, Outcome};
 /// holds a seed and private keys in memory, so this is deliberately small.
 const MAX_JOBS: usize = 32;
 use nano_keys::MatchMode;
+use crate::qubic::Chain;
+use crate::qubic_search::{QubicJob, QubicOutcome};
+
+/// A job on either chain.
+///
+/// The two job types are kept apart rather than unified behind a trait
+/// because they share almost nothing: the Nano job scans one seed's account
+/// indices and reports an index, the Qubic job scans seeds and has no index
+/// at all. A trait would need a method per divergent field, and the dispatch
+/// below is a handful of lines.
+#[derive(Clone)]
+pub enum AnyJob {
+    Nano(Arc<Job>),
+    Qubic(Arc<QubicJob>),
+}
+
+impl AnyJob {
+    pub fn chain(&self) -> Chain {
+        match self {
+            AnyJob::Nano(_) => Chain::Nano,
+            AnyJob::Qubic(_) => Chain::Qubic,
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        match self {
+            AnyJob::Nano(j) => j.is_running(),
+            AnyJob::Qubic(j) => j.is_running(),
+        }
+    }
+
+    pub fn cancel(&self) {
+        match self {
+            AnyJob::Nano(j) => j.cancel(),
+            AnyJob::Qubic(j) => j.cancel(),
+        }
+    }
+
+    /// The polling payload for this job, in the same JSON shape on both
+    /// chains. `status_json` and `qubic_status_json` keep their own shapes and
+    /// this is the single place they are chosen between.
+    pub fn status_json(&self) -> String {
+        match self {
+            AnyJob::Nano(j) => status_json(j),
+            AnyJob::Qubic(j) => qubic_status_json(j),
+        }
+    }
+}
 
 struct State {
-    jobs: Mutex<HashMap<u64, Arc<Job>>>,
+    jobs: Mutex<HashMap<u64, AnyJob>>,
     next_id: Mutex<u64>,
 }
 
@@ -136,6 +184,72 @@ fn status_json(job: &Job) -> String {
                 out.push_str(&json_str(&engine::hex_upper(&first.private_key)));
                 out.push(',');
                 out.push_str(&format!("\"index\":{}", first.index));
+            }
+        }
+    }
+    out.push('}');
+    out
+}
+
+/// The same shape as `status_json`, for a Qubic job.
+///
+/// A separate function rather than a parameterised one because the two report
+/// genuinely different things: there is no `index`, no `max_index` and no
+/// `capped` state on the Qubic side, and a Qubic result carries a 55-letter
+/// seed that *is* the wallet rather than a shared 64-hex seed.
+fn qubic_status_json(job: &QubicJob) -> String {
+    let tries = job.tries();
+    let elapsed = job.elapsed_secs();
+    let rate = job.rate();
+    let progress = job.progress();
+
+    let mut out = String::from("{");
+    out.push_str("\"chain\":\"qubic\",");
+    out.push_str(&format!("\"prefix\":{},", json_str(job.pattern.needle())));
+    out.push_str(&format!("\"threads\":{},", job.threads));
+    out.push_str(&format!("\"tries\":{tries},"));
+    out.push_str(&format!("\"elapsed\":{elapsed:.3},"));
+    out.push_str(&format!("\"rate\":{rate:.0},"));
+    out.push_str(&format!("\"expected\":{:.0},", job.expected));
+    out.push_str(&format!("\"want\":{},", job.want));
+    out.push_str(&format!("\"mode\":{},", json_str(job.pattern.mode().as_str())));
+    out.push_str("\"max_index\":null,");
+    out.push_str(&format!("\"progress\":{progress:.6},"));
+
+    match job.outcome() {
+        None => out.push_str("\"state\":\"running\""),
+        Some(QubicOutcome::Exhausted) => {
+            // No "capped" state exists on this chain: there is no index ceiling
+            // to hit. A time limit is the only way to stop early.
+            let why = if job.timed_out() { "timeout" } else { "exhausted" };
+            out.push_str(&format!("\"state\":\"exhausted\",\"why\":\"{why}\""));
+        }
+        Some(QubicOutcome::Found(found)) => {
+            out.push_str("\"state\":\"found\",");
+            out.push_str(&format!("\"count\":{},", found.len()));
+            out.push_str("\"results\":[");
+            for (n, f) in found.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"address\":{},\"private_key\":{},\"seed\":{},\"attempt\":{}}}",
+                    json_str(&f.identity),
+                    json_str(&engine::hex_upper(&f.private_key)),
+                    json_str(&f.seed),
+                    f.attempt
+                ));
+            }
+            out.push_str("],");
+            if let Some(first) = found.first() {
+                out.push_str("\"address\":");
+                out.push_str(&json_str(&first.identity));
+                out.push(',');
+                out.push_str("\"private_key\":");
+                out.push_str(&json_str(&engine::hex_upper(&first.private_key)));
+                out.push(',');
+                out.push_str("\"seed\":");
+                out.push_str(&json_str(&first.seed));
             }
         }
     }
@@ -299,6 +413,107 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                 return Ok(());
             }
 
+            // The chain is read before anything chain-specific is validated.
+            // A Qubic request is dispatched to its own job type; the Nano
+            // fields below are still parsed so a stale client that omits
+            // `chain` keeps working exactly as it did.
+            let chain = match json_field(&body, "chain").as_deref() {
+                Some("qubic") | Some("q") => Chain::Qubic,
+                _ => Chain::Nano,
+            };
+
+            if chain == Chain::Qubic {
+                // Qubic: no prefix anchoring, no index, no grinding. A stale
+                // Nano flag is reported rather than ignored, because a user who
+                // leaves `max_index` ticked after switching chains would
+                // otherwise get a search that quietly ignores their cap.
+                for (field, present) in [
+                    ("Max account index", json_field(&body, "max_index").is_some()),
+                    ("Grind seeds", json_field(&body, "grind").map(|v| v == "true" || v == "1").unwrap_or(false)),
+                    ("Skip first character", json_field(&body, "skip_first").map(|v| v == "true" || v == "1").unwrap_or(false)),
+                ] {
+                    if present {
+                        write_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            "application/json",
+                            &format!(
+                                "{{\"error\":\"{field} does not apply to Qubic: it has no account index.\"}}"
+                            ),
+                        )?;
+                        return Ok(());
+                    }
+                }
+
+                let pattern = match crate::qubic::IdentityPattern::new(
+                    &prefix,
+                    mode,
+                    0,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        write_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            "application/json",
+                            &format!("{{\"error\":{}}}", json_str(&e)),
+                        )?;
+                        return Ok(());
+                    }
+                };
+                let master = match json_field(&body, "seed") {
+                    Some(s) if !s.is_empty() => match crate::qubic::parse_seed(&s) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            write_response(
+                                &mut stream,
+                                "400 Bad Request",
+                                "application/json",
+                                &format!("{{\"error\":{}}}", json_str(&e)),
+                            )?;
+                            return Ok(());
+                        }
+                    },
+                    _ => match crate::qubic_search::random_master() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            write_response(
+                                &mut stream,
+                                "500 Internal Server Error",
+                                "application/json",
+                                &format!("{{\"error\":{}}}", json_str(&e)),
+                            )?;
+                            return Ok(());
+                        }
+                    },
+                };
+                match QubicJob::start(pattern, threads, seconds, &master, count) {
+                    Ok(job) => {
+                        let mut id = state.next_id.lock().unwrap();
+                        let this = *id;
+                        *id += 1;
+                        drop(id);
+                        state.jobs.lock().unwrap().insert(this, AnyJob::Qubic(job));
+                        write_response(
+                            &mut stream,
+                            "200 OK",
+                            "application/json",
+                            &format!("{{\"id\":{this}}}"),
+                        )
+                    }
+                    Err(e) => {
+                        let esc = json_str(&e);
+                        write_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            "application/json",
+                            &format!("{{\"error\":{esc}}}"),
+                        )
+                    }
+                }?;
+                return Ok(());
+            }
+
             let started = if grind {
                 Job::start_grinding(
                     prefix, threads, seconds, seed, count, skip_first, mode, seed_index,
@@ -316,7 +531,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                     drop(id);
                     {
                         let mut jobs = state.jobs.lock().unwrap();
-                        jobs.insert(this, job);
+                        jobs.insert(this, AnyJob::Nano(job));
                         // Reap old jobs. Without this the map grows for the
                         // lifetime of the server, holding every finished Job
                         // (and its seed and keys) in memory after each run.
@@ -361,7 +576,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
             let job = id.and_then(|i| state.jobs.lock().unwrap().get(&i).cloned());
             match job {
                 Some(j) => {
-                    write_response(&mut stream, "200 OK", "application/json", &status_json(&j))
+                    write_response(&mut stream, "200 OK", "application/json", &j.status_json())
                 }
                 None => write_response(
                     &mut stream,
@@ -392,19 +607,24 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
 }
 
 /// Serves until killed with Ctrl-C.
-pub fn serve(addr: SocketAddr) -> std::io::Result<()> {
+pub fn serve(addr: SocketAddr, default_chain: Chain) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr)?;
-    serve_listener(listener)
+    serve_listener_with(listener, default_chain)
 }
 
-/// Serves on an already-bound listener.
+/// Serves on an already-bound listener, with an explicit starting chain.
+pub fn serve_listener(listener: TcpListener) -> std::io::Result<()> {
+    serve_listener_with(listener, Chain::Nano)
+}
+
+/// The real serve loop, with the chain the UI starts on.
 ///
 /// Split out so tests can hand over a listener they already hold. Binding port
 /// 0 to *discover* a free port and then releasing it before rebinding is a
 /// TOCTOU race: under a loaded runner another thread can take the port in
 /// between, and the silently-failed bind then routes requests to the wrong
 /// server. Holding the listener removes the window entirely.
-pub fn serve_listener(listener: TcpListener) -> std::io::Result<()> {
+fn serve_listener_with(listener: TcpListener, default_chain: Chain) -> std::io::Result<()> {
     let local = listener.local_addr()?;
     let shown = if local.ip().is_unspecified() {
         format!("http://{}:{}/", local_hostname(), local.port())
