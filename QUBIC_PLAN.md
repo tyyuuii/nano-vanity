@@ -1,3 +1,10 @@
+
+> **Status: implemented.** Everything below is done and verified. What
+> actually shipped, what was measured, and the three silent bugs found
+> along the way are written up in [`ERRATA.md`](ERRATA.md) §11 and the
+> README's [Qubic](README.md#qubic) section. This file is kept for the
+> reasoning that led there.
+
 # Qubic crypto research + plan
 
 Branch `Qubic-test`. **Research is complete and sourced; implementation has
