@@ -1295,7 +1295,8 @@ const CHAIN_HINTS = {
         'seed is reusable and the result is not the whole wallet.',
   qubic: 'A 55-letter lowercase seed. There is no account index, so the search ' +
          'varies the seed itself and a found seed <em>is</em> the wallet. ' +
-         'FourQ costs about 2.4x a Nano candidate per unit of matching, so ' +
+         'A Qubic candidate costs 2.4x a Nano one, so end to end you get ' +
+         'about 34,000 identities/s here against Nano\u2019s 65,000, and ' +
          'prefer <code>contains</code> or <code>suffix</code> over a long prefix.'
 };
 
@@ -1335,9 +1336,9 @@ function syncChain() {
   // Counts read very differently between the chains, so say so where the user
   // sets the number rather than leaving them to discover it from a wait.
   $('count').parentElement.querySelector('.hint').innerHTML = q
-    ? 'Collects the N lowest matching candidates. Qubic is about 2.4x slower per ' +
-      'candidate than Nano, so a 4-character prefix is a multi-day search even on ' +
-      'every core.'
+    ? 'Collects the N lowest matching candidates. Qubic manages about 34,000 ' +
+      'identities/s on every core against Nano\u2019s 65,000, so a 4-character ' +
+      'prefix is a multi-day search and a 5-character one is out of reach.'
     : 'Collects the N lowest matches for the seed. The last one sets how long the ' +
       'search runs.';
 

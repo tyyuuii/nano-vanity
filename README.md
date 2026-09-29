@@ -1,9 +1,33 @@
 # nano-vanity
 
-**A fast Nano (XNO) vanity address generator written in Rust** — find a Nano
-address that starts, ends, or contains any pattern you like, and get back the
-**wallet seed** that produces it, not just a private key nothing can restore
-from.
+**Vanity addresses for both Nano (XNO) and Qubic (Q), on CPU, in Rust.**
+
+One tool, two chains, no GPU and no root. The Qubic support is not a fork or an
+addon — it is the same engine, the same CLI and the same web UI, with
+`--chain qubic`:
+
+| | **Nano (XNO)** | **Qubic (Q)** |
+|---|---|---|
+| Seed | 64 hex chars | 55 letters `a`–`z` |
+| Hash | Blake2b | KangarooTwelve |
+| Curve | Ed25519 | FourQ over `2¹²⁷−1` |
+| Result | `nano_1…` (65 chars) | 60 uppercase letters |
+| Searches | one seed's account indices | candidate seeds |
+| Speed here | ~65,000 addr/s, 8 cores | ~34,000 addr/s, 8 cores |
+
+```sh
+nano-vanity 1111                          # Nano
+nano-vanity --chain qubic AB              # Qubic
+```
+
+**Everything runs on your own CPU.** No GPU, no proot, no root — it builds and
+runs natively in Termux on a phone. See [Performance](#performance-measured-on-a-huawei-kirin-710-8-core)
+for the measured numbers, and [Qubic](#qubic) for what is different about the
+Qubic side (there is one thing that matters a great deal, and it is not the
+arithmetic).
+
+For Nano, this grinder reports the **wallet seed** that produces each hit, not
+just a private key nothing can restore from.
 
 [![CI](https://github.com/tyyuuii/nano-vanity/actions/workflows/ci.yml/badge.svg)](https://github.com/tyyuuii/nano-vanity/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/tyyuuii/nano-vanity?label=release)](https://github.com/tyyuuii/nano-vanity/releases/latest)
@@ -378,7 +402,25 @@ future "optimisation" cannot quietly flip it.
 FourQ's reference scalar multiply is a 65-round Montgomery ladder with **no
 precomputed base table** — roughly 325 point operations against dalek's 64
 additions. It is 97.7% of the cost of a candidate; the two K12 hashes are 0.8%
-together, so hashing is not worth touching. Measured on a Kirin 710:
+together, so hashing is not worth touching.
+
+End to end on a Kirin 710 with 8 threads, Qubic does about **34,000
+identities/s** against Nano's **65,000** — a ratio near 1.9x, even though a
+single candidate costs 2.4x more. The gap is narrower than the per-candidate
+figure suggests because Qubic scales better across cores. Measured, 10-second
+runs of patterns too long to match:
+
+| | CLI | Web UI |
+|---|---|---|
+| Nano | 65,000 addr/s | 64,893 addr/s |
+| Qubic | 34,077 addr/s | 33,860 addr/s |
+
+The two front-ends agree within 1%, so the web UI is not a slower path to the
+same work. Note that the *reported* rate on a short search is a real number and
+can look misleading: a one-character pattern that finds its match in 0.07s
+after examining 8 candidates reports ~109/s.
+
+Per-candidate cost, for reference:
 
 | Pattern | Expected candidates | One core | 8 threads |
 |---|---|---|---|
