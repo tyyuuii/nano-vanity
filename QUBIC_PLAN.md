@@ -304,11 +304,30 @@ node RPC, and anything that touches a funded seed.
 
 ## 5. Open questions to resolve during Step 1
 
-1. **Is there a seed index after all?** The npm docs for `@qubic-labs/core`
-   mention `privateKeyFromSeed(seed, index?)`, but the official
-   `qubic-typescript` `deriveKeys(seed)` has no such parameter. The former is
-   likely a different or older API. **Resolve this before designing the search
-   engine**, because it decides whether a seed can yield more than one identity.
+1. ~~**Is there a seed index after all?**~~ **Resolved: no. There is no seed
+   index, and `privateKeyFromSeed` does not exist.**
+
+   The note that prompted this question was wrong, and it was wrong in our own
+   notes rather than in any upstream source. Checked against four independent
+   places, all agreeing:
+
+   - the installed `@qubic.org/crypto` exports exactly one seed-taking
+     function, and it takes one argument: `deriveKeys(seed)`, arity 1, with
+     `deriveIdentityFromSeed` and `publicKeyFromSeed` likewise arity 1. There is
+     no `privateKeyFromSeed` in the export list or in any `.d.ts`;
+   - `identity.ts` defines `deriveKeys(seed: Seed): DerivedKeys` and nothing else
+     seed-shaped;
+   - the C++ reference has `getSubseedFromSeed(seed, subseed)` and
+     `getPublicKeyFromSeed(seed, publicKey)` -- both take only a seed;
+   - the one function anywhere in the API that takes an index is
+     `contractIndexToIdentity(contractIndex)`, which is the identity of a small
+     integer used for smart-contract addresses. It has nothing to do with seed
+     derivation, and conflating it with a seed index is the most likely way the
+     bogus `privateKeyFromSeed(seed, index?)` name arose.
+
+   So the design assumption this tool is built on holds: one seed, one identity,
+   permanently. Every Qubic search varies the seed, and a found seed is the
+   whole wallet.
 2. **What is the exact group order `n`?** Needed for `condAddOrderN`. It is in
    `fourq-constants.ts`; read it from there rather than transcribing it from
    this document.
