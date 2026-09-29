@@ -32,7 +32,10 @@ fn bench<T>(name: &str, iters: u32, mut f: impl FnMut(u32) -> T) -> f64 {
 }
 
 fn main() {
-    let iters: u32 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(200);
+    let iters: u32 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
     let seed_bytes: [u8; 55] = std::array::from_fn(|i| (i % 26) as u8);
 
     println!("Qubic per-candidate cost on this device ({iters} iters each)\n");
@@ -55,7 +58,9 @@ fn main() {
         black_box(scalar_base_mult(&k))
     });
     let pt = scalar_base_mult(&priv_key);
-    let affine = bench("to_affine (one Fq inversion)", iters, |_i| black_box(&pt).pipe_affine());
+    let affine = bench("to_affine (one Fq inversion)", iters, |_i| {
+        black_box(&pt).pipe_affine()
+    });
     let compress = bench("point_marshal", iters, |_i| black_box(&pt).pipe_marshal());
 
     let total = k12_a + k12_b + mul + compress;

@@ -25,8 +25,8 @@
 // that break the correspondence with the source being verified.
 #![allow(clippy::should_implement_trait)]
 
-pub mod fp;
 pub mod fourq;
+pub mod fp;
 pub mod identity;
 pub mod k12;
 

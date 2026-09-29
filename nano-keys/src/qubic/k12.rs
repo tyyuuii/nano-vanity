@@ -51,8 +51,7 @@ mod tests {
     /// The official KangarooTwelve test vector for the empty message, taken
     /// from the specification and independently confirmed by
     /// `qubic-typescript`'s `k12.test.ts`.
-    const K12_EMPTY: &str =
-        "1ac2d450fc3b4205d19da7bfca1b37513c0803577ac7167f06fe2ce1f0ef39e5";
+    const K12_EMPTY: &str = "1ac2d450fc3b4205d19da7bfca1b37513c0803577ac7167f06fe2ce1f0ef39e5";
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
@@ -61,7 +60,10 @@ mod tests {
     #[test]
     fn matches_official_spec_vector() {
         let got = hex(&k12_32(b""));
-        assert_eq!(got, K12_EMPTY, "K12 of the empty message must match the spec");
+        assert_eq!(
+            got, K12_EMPTY,
+            "K12 of the empty message must match the spec"
+        );
     }
 
     #[test]

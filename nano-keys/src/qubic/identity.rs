@@ -187,7 +187,12 @@ mod tests {
         for g in GOLDEN {
             let d = derive_keys(g.seed).unwrap_or_else(|e| panic!("seed {} rejected: {e}", g.seed));
             assert_eq!(hx(&d.subseed), g.subseed, "subseed for {}", g.seed);
-            assert_eq!(hx(&d.private_key), g.private_key, "private key for {}", g.seed);
+            assert_eq!(
+                hx(&d.private_key),
+                g.private_key,
+                "private key for {}",
+                g.seed
+            );
             assert_eq!(hx(&d.public_key), g.public_key, "public key for {}", g.seed);
             assert_eq!(d.identity, g.identity, "identity for {}", g.seed);
         }

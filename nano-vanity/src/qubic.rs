@@ -19,8 +19,7 @@
 //! when they print a result.
 
 use nano_keys::qubic::identity::{
-    derive_keys, public_key_to_identity, seed_to_bytes,
-    IDENTITY_LENGTH, SEED_LENGTH,
+    derive_keys, public_key_to_identity, seed_to_bytes, IDENTITY_LENGTH, SEED_LENGTH,
 };
 use nano_keys::MatchMode;
 
@@ -268,7 +267,10 @@ mod tests {
     fn candidate_derivation_is_reproducible() {
         let a = derive_candidate("master-seed-for-testing-only", 7);
         let b = derive_candidate("master-seed-for-testing-only", 7);
-        assert_eq!(a, b, "the same master and attempt must give the same candidate");
+        assert_eq!(
+            a, b,
+            "the same master and attempt must give the same candidate"
+        );
     }
 
     #[test]

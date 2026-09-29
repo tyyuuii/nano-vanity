@@ -33,7 +33,6 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-
 use crate::qubic::{derive_candidate, random_seed, IdentityPattern, Keys};
 
 /// Candidates claimed per block. Mirrors `engine::BLOCK`.
@@ -310,9 +309,7 @@ impl QubicJob {
         match &guard.outcome {
             // Everything up to and including the last match had to be examined,
             // so this is the same on every run with the same master seed.
-            Some(QubicOutcome::Found(f)) => {
-                f.last().map(|m| m.attempt + 1).unwrap_or(guard.tries)
-            }
+            Some(QubicOutcome::Found(f)) => f.last().map(|m| m.attempt + 1).unwrap_or(guard.tries),
             // No match: the work counter is the honest report.
             _ => guard.tries,
         }
@@ -355,7 +352,8 @@ impl QubicJob {
 
     /// Whether the search stopped on a time limit rather than a real answer.
     pub fn timed_out(&self) -> bool {
-        self.time_limit.is_some_and(|s| self.elapsed_secs() >= s as f64 - 0.5)
+        self.time_limit
+            .is_some_and(|s| self.elapsed_secs() >= s as f64 - 0.5)
     }
 
     pub fn cancel(&self) {
@@ -419,6 +417,9 @@ mod tests {
         // the first re-derives a fresh seed from the master -- so this checks the
         // pure path against the golden vector rather than against itself.
         let f = derive_once(&"a".repeat(55)).unwrap();
-        assert_eq!(f.identity, "BZBQFLLBNCXEMGLOBHUVFTLUPLVCPQUASSILFABOFFBCADQSSUPNWLZBQEXK");
+        assert_eq!(
+            f.identity,
+            "BZBQFLLBNCXEMGLOBHUVFTLUPLVCPQUASSILFABOFFBCADQSSUPNWLZBQEXK"
+        );
     }
 }

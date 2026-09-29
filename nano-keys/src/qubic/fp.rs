@@ -48,7 +48,11 @@ impl Fp {
     #[inline]
     pub fn from_u128(v: u128) -> Fp {
         let folded = (v & MASK127) + (v >> 127);
-        Fp::from_canonical(if folded >= P128 { folded - P128 } else { folded })
+        Fp::from_canonical(if folded >= P128 {
+            folded - P128
+        } else {
+            folded
+        })
     }
 
     #[inline]
@@ -179,7 +183,10 @@ impl Fp {
     #[inline]
     pub fn cmov(self, b: Fp, flag: u64) -> Fp {
         let mask = 0u64.wrapping_sub(flag & 1);
-        Fp((self.0 & !mask) | (b.0 & mask), (self.1 & !mask) | (b.1 & mask))
+        Fp(
+            (self.0 & !mask) | (b.0 & mask),
+            (self.1 & !mask) | (b.1 & mask),
+        )
     }
 
     /// 0 for zero, 1 for non-zero with bit 126 clear, -1 for non-zero with
@@ -294,7 +301,11 @@ mod tests {
             let a = r.fp();
             let b = r.fp();
             for v in [a, a.add(b), a.sub(b), a.mul(b), a.square(), a.neg()] {
-                assert!(v.to_u128() < P128, "value {:#x} is not reduced", v.to_u128());
+                assert!(
+                    v.to_u128() < P128,
+                    "value {:#x} is not reduced",
+                    v.to_u128()
+                );
                 assert!(v.1 >> 63 == 0, "high limb out of range");
             }
         }

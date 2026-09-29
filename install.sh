@@ -152,6 +152,7 @@ cat >"$TMP_LAUNCHER" <<'LAUNCHER_EOF'
 #
 #   Nanvin                  start on the default port and open the browser
 #   Nanvin -p 9000          use another port
+#   Nanvin --chain qubic    open on the Qubic tab instead of Nano
 #   Nanvin --no-open        do not open a browser
 #   Nanvin --stop           stop a running server
 #   Nanvin -h               this help
@@ -165,9 +166,17 @@ BIN="@NANVIN_BIN@"
 PORT="${NANVIN_PORT:-8787}"
 OPEN=1
 STOP=0
+# Which chain the UI opens on. Both chains are served by the same process
+# either way -- the selector is in the UI -- so this only sets the starting
+# tab. Validated below rather than passed through unchecked, because it is
+# interpolated into a command line.
+CHAIN="nano"
 
 usage() {
-    sed -n '3,13p' "$0" | sed 's/^# \{0,1\}//'
+    # The line range has to cover the whole doc comment above. It grew by one
+    # line when --chain was added, and a range that is one short silently drops
+    # the final line of the help rather than failing.
+    sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # NOTE: `pgrep -x` / `pkill -x` do not match this binary on Termux (verified:
@@ -192,6 +201,9 @@ while [[ $# -gt 0 ]]; do
         -p|--port)
             [[ $# -ge 2 ]] || { echo "error: $1 needs a value" >&2; exit 2; }
             PORT="$2"; shift 2 ;;
+        --chain)
+            [[ $# -ge 2 ]] || { echo "error: $1 needs a value" >&2; exit 2; }
+            CHAIN="$2"; shift 2 ;;
         --no-open) OPEN=0; shift ;;
         --stop) STOP=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -200,6 +212,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$PORT" =~ ^[0-9]+$ ]] || { echo "error: bad port: $PORT" >&2; exit 2; }
+# The chain is interpolated into a command line, so it is checked against an
+# explicit list rather than merely being non-empty.
+case "$CHAIN" in
+    nano|xno) CHAIN="nano" ;;
+    qubic|q)  CHAIN="qubic" ;;
+    *) echo "error: unknown chain: $CHAIN (try nano or qubic)" >&2; exit 2 ;;
+esac
 [[ -x "$BIN" ]] || { echo "error: $BIN not found or not executable. Re-run install.sh" >&2; exit 1; }
 
 if [[ $STOP -eq 1 ]]; then
@@ -316,7 +335,7 @@ echo "Starting nano-vanity web UI on port $PORT ..."
 
 # Run the server in the background so we can wait for readiness, then hand
 # control back to it. Output is streamed to this terminal.
-"$BIN" --web --bind "127.0.0.1:$PORT" &
+"$BIN" --web --bind "127.0.0.1:$PORT" --chain "$CHAIN" &
 SERVER_PID=$!
 
 # Make sure Ctrl-C and the shell script end the server too, rather than
@@ -409,6 +428,7 @@ c_ok "Installed."
 echo
 echo "  Nanvin              start the web UI and open the browser"
 echo "  Nanvin -p 9000      use another port"
+echo "  Nanvin --chain qubic  open the web UI on the Qubic tab"
 echo "  Nanvin --no-open    start without opening a browser"
 echo "  nano-vanity 1111    CLI grind instead (see nano-vanity --help)"
 echo "  ./install.sh -u     uninstall"

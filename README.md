@@ -42,6 +42,10 @@ the address is restorable, and with `--grind` the vanity address lands on
 - **Local web UI** using only `std::net` — no axum, no tokio, no async runtime.
 - **Optional `--derive`** to check any seed and account index against a wallet
   that disagrees with you.
+- **Qubic mode** — `--chain qubic` searches 55-letter Qubic seeds (K12, FourQ,
+  60-letter identities) with the same engine, the same web UI and the same
+  installer. See [Qubic](#qubic) for what is different, because one thing
+  about it matters a great deal.
 
 > ⚠️ The web UI displays wallet seeds and private keys in plain text. It binds
 > to `127.0.0.1` by default for that reason. Read
@@ -60,7 +64,10 @@ the address is restorable, and with `--grind` the vanity address lands on
 | Collect **N** addresses from one seed | `nano-vanity 1111 -n 5` |
 | Reproduce an earlier run | `nano-vanity 1111 -s <the printed seed>` |
 | Check a seed against a wallet | `nano-vanity --derive <SEED> --index 0` |
+| Derive a Qubic identity | `nano-vanity --chain qubic --derive <SEED>` |
+| Search Qubic identities | `nano-vanity --chain qubic AB` |
 | Local web UI | `nano-vanity --web` (or `Nanvin` on Termux) |
+| Web UI starting on Qubic | `Nanvin --chain qubic` |
 
 ## Install
 
@@ -145,6 +152,9 @@ nano-vanity 11111 -T 60                 # give up after 60s, report rate
 nano-vanity 1111 -n 4                   # collect 4 addresses from one seed
 nano-vanity --derive <SEED> --index 0   # check a seed against a wallet
 nano-vanity --web                       # local web UI
+
+nano-vanity --chain qubic AB            # search Qubic identities
+nano-vanity --chain qubic --derive <SEED>
 ```
 
 ```
@@ -309,6 +319,105 @@ printed values. Nault can reach any index directly, so there is nothing to
 create first. Count is capped at 1000; if a time limit or cancel cuts the search
 short you get what was found, and the UI says so.
 
+## Qubic
+
+Qubic is a **mode of this tool**, not a separate program and not a fork of the
+crypto. All of the Qubic arithmetic lives under `nano-keys/src/qubic/`, and
+nothing in it reaches into the Nano code. FourQ over `2¹²⁷−1` is a different
+curve family from Ed25519 over `2²⁵⁵−19`; the two are unrelated despite both
+being twisted Edwards curves.
+
+```sh
+nano-vanity --chain qubic AB              # search candidate seeds
+nano-vanity --chain qubic --derive aaaa…aaaa
+nano-vanity --chain qubic ABC -m contains # far cheaper than a long prefix
+```
+
+### What is different
+
+| | Nano | Qubic |
+|---|---|---|
+| Seed | 64 hex characters | 55 letters, `a`–`z` |
+| Hash | Blake2b | KangarooTwelve |
+| Curve | Ed25519 (`2²⁵⁵−19`) | FourQ (`2¹²⁷−1` + quadratic extension) |
+| Result | `nano_1…`, 65 characters | 60 uppercase letters |
+| Search axis | one seed's account indices | **candidate seeds** |
+| Per candidate | ~79 µs | ~188 µs |
+| Rejected flags | — | `--grind`, `--max-index`, `--seed-index` |
+
+Those three flags are **rejected** under `--chain qubic`, not ignored. They all
+describe an account index, and Qubic has none. Silently discarding a constraint
+someone typed is worse than refusing it.
+
+### A Qubic seed is the wallet
+
+This is the one thing worth taking away, and it is not a detail.
+
+Nano has account indexes, so one seed maps to many addresses and a found
+address is not the whole wallet. **Qubic has no account index**: `deriveKeys`
+takes only a seed, so one 55-letter seed maps to exactly one identity,
+permanently. Every Qubic search therefore varies the seed, and **whatever it
+finds *is* the wallet** — there is no "import the seed and pick account 0"
+afterwards, and no other key that can recover it. The CLI, the web JSON and the
+flag help all say so wherever a result can appear.
+
+### The encoding is not like Nano's
+
+A Qubic identity reads the 32-byte public key as four **little-endian** `u64`
+fragments and writes each as 14 base-26 digits **least-significant digit first**.
+
+So `identity[0]` depends on the **low** bits of the public key. That is the
+opposite of Nano's `enc52`, and of the intuition the rest of this README
+teaches. Getting it backwards produces a valid-looking address belonging to
+nobody — the same failure class as the account-index endianness bug recorded in
+[`ERRATA.md`](ERRATA.md) §7. A test pins the digit order down specifically, so a
+future "optimisation" cannot quietly flip it.
+
+### Speed, honestly
+
+FourQ's reference scalar multiply is a 65-round Montgomery ladder with **no
+precomputed base table** — roughly 325 point operations against dalek's 64
+additions. It is 97.7% of the cost of a candidate; the two K12 hashes are 0.8%
+together, so hashing is not worth touching. Measured on a Kirin 710:
+
+| Pattern | Expected candidates | One core | 8 threads |
+|---|---|---|---|
+| `A` | 26 | ~5 ms | instant |
+| `AB` | 676 | ~0.13 s | ~0.1 s |
+| `ABC` | 17,576 | ~3.3 s | ~1.5 s |
+| `ABCD` | 456,976 | ~1.5 min | ~40 s |
+| `ABCDE` | 11,881,376 | ~37 min | ~10 min |
+
+Prefer `-m contains` or `-m suffix` over a long prefix. At 60 positions a
+substring is ~60× likelier per character, which buys far more here than any
+arithmetic optimisation would.
+
+### Verification
+
+Derivation is checked against the **official `@qubic.org/crypto` package**, never
+against itself:
+
+- six golden vectors covering subseed, private key, public key and identity;
+- the published K12 spec vector;
+- 512 field-multiplication triples from a Python oracle;
+- contract identities, which exercise the encoding through a path that never
+  touches the seed derivation — index 1/2/4 give `BAAA…`/`CAAA…`/`EAAA…`, and
+  index 4 matches the QUTIL address quoted in Qubic's own documentation;
+- **every golden public key satisfies the FourQ curve equation**, recomputed
+  independently in Python with a Tonelli–Shanks square root over `Fq`;
+- live searches through the shipped binary, then validating each found
+  identity's 60 characters, decoding it back to the same 32 bytes and
+  re-deriving its checksum — plus re-deriving a *found* seed to the identity it
+  was found for, which is the loop chosen-in-advance vectors cannot close.
+
+```sh
+python3 research/qubic/cross_check.py   # 51 checks, ~11s
+```
+
+Qubic's reference files under `research/qubic/` belong to the Qubic project
+under its own licence. They are research material only: nothing there is
+compiled or vendored.
+
 ## How it works
 
 The hot loop allocates nothing. Per candidate:
@@ -463,23 +572,35 @@ nano-vanity/
 ├── NOTICE                # third-party attribution: Nault
 ├── NANO_VANITY_PLAN.md   # corrected project plan
 ├── ERRATA.md             # what the common recipe gets wrong, and the evidence
-├── nano-keys/            # library: seed -> key -> public key -> address
+├── nano-keys/            # library: seed -> key -> public key -> address/identity
+│   ├── src/qubic/        # K12, Fp, FourQ, identity encoding (Qubic)
 │   └── examples/profile.rs   # micro-profile of the hot loop
 ├── nano-vanity/          # binary
 │   └── src/
-│       ├── engine.rs     # shared search engine (CLI + web)
+│       ├── engine.rs       # Nano search engine (CLI + web)
+│       ├── qubic.rs        # Qubic candidate derivation and matching
+│       ├── qubic_search.rs # Qubic search driver
 │       ├── main.rs       # CLI front-end
 │       └── web.rs        # dependency-free local web UI
 └── research/             # independent Python cross-checks
     ├── cross_check.py    # re-derives the binary's results from scratch
-    └── checksum.py       # shows why the checksum is Blake2b-5 reversed
+    ├── checksum.py       # shows why the checksum is Blake2b-5 reversed
+    └── qubic/            # Qubic references, vectors and cross-check
+        └── cross_check.py  # curve equation, encoding, live searches
 ```
 
-Run the independent cross-check after any change to the crypto:
+Run the independent cross-checks after any change to the crypto:
 
 ```sh
-python3 research/cross_check.py
+python3 research/cross_check.py          # Nano,  ~2s
+python3 research/qubic/cross_check.py    # Qubic, ~11s
 ```
+
+The Nano check re-implements the derivation in Python, checks a published
+docs.nano.org vector, then re-derives four live results from the seeds the
+binary printed. The Qubic check is anchored to the official npm package and to
+Python's bigints rather than re-implementing FourQ — see
+[Verification](#verification). Both exit non-zero on any disagreement.
 
 It re-implements the derivation in Python, checks a published docs.nano.org
 vector, then re-derives four live results from the seeds the binary printed.

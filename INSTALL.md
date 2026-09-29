@@ -102,10 +102,11 @@ server, waits for it to be ready, and opens your browser.
 Afterwards:
 
 ```sh
-Nanvin              # start the server and open the browser
-Nanvin -p 9000      # use a different port
-Nanvin --no-open    # start the server without launching a browser
-Nanvin --stop       # stop a running server
+Nanvin                # start the server and open the browser
+Nanvin -p 9000        # use a different port
+Nanvin --chain qubic  # open the UI on the Qubic tab instead of Nano
+Nanvin --no-open      # start the server without launching a browser
+Nanvin --stop         # stop a running server
 ```
 
 The launcher exists because Termux has no desktop session, so there is nothing

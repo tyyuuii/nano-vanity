@@ -23,9 +23,9 @@ use std::net::SocketAddr;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use qubic::Chain;
 use engine::{hex_upper, parse_seed, random_seed, Job, Outcome};
 use nano_keys::{MatchMode, ALPHABET, MAX_FAST_PREFIX};
+use qubic::Chain;
 
 /// Strips an optional `nano_`/`xrb_` prefix and validates the rest.
 pub fn normalize_prefix(input: &str) -> Result<String, String> {
@@ -318,8 +318,7 @@ fn parse_args() -> Result<Args, String> {
             "-s" | "--seed" => {
                 let v = it.next().ok_or("--seed needs a value")?;
                 if chain == Chain::Qubic {
-                    qubic_seed =
-                        Some(qubic::parse_seed(&v).map_err(|e| format!("--seed: {e}"))?);
+                    qubic_seed = Some(qubic::parse_seed(&v).map_err(|e| format!("--seed: {e}"))?);
                 } else {
                     seed = Some(parse_seed(&v)?);
                 }
@@ -378,7 +377,8 @@ fn parse_args() -> Result<Args, String> {
         }
         if seed.is_some() {
             return Err("--seed was given a 64-hex value before --chain qubic; \
-                        a Qubic seed is 55 lowercase letters".into());
+                        a Qubic seed is 55 lowercase letters"
+                .into());
         }
     }
 
@@ -1703,7 +1703,11 @@ fn run_qubic(args: &Args) -> i32 {
                 };
             }
             if !printed {
-                eprint!("\r  searching... {} tried, {:.0}/s", job.tries(), job.rate());
+                eprint!(
+                    "\r  searching... {} tried, {:.0}/s",
+                    job.tries(),
+                    job.rate()
+                );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
                 printed = true;
             }
@@ -1726,9 +1730,7 @@ fn print_qubic_header(
     expected: f64,
     seconds: Option<u64>,
 ) {
-    println!(
-        "  chain      : qubic (K12 + FourQ, 60-letter identity)"
-    );
+    println!("  chain      : qubic (K12 + FourQ, 60-letter identity)");
     println!(
         "  pattern    : {} in {} mode{}",
         pattern.needle(),

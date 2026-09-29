@@ -107,10 +107,16 @@ fn main() {
 
     println!("\n  whole-loop budget (hash512 + reduce + mul + compress):");
     let total = ns_hash512 + ns_reduce + ns_mul + ns_compress_bytes;
-    println!("    blake2b-512         {:5.1}%", ns_hash512 / total * 100.0);
+    println!(
+        "    blake2b-512         {:5.1}%",
+        ns_hash512 / total * 100.0
+    );
     println!("    reduce              {:5.1}%", ns_reduce / total * 100.0);
     println!("    multiply            {:5.1}%", ns_mul / total * 100.0);
-    println!("    compress            {:5.1}%", ns_compress_bytes / total * 100.0);
+    println!(
+        "    compress            {:5.1}%",
+        ns_compress_bytes / total * 100.0
+    );
     println!("    total               {total:.1} ns/candidate");
 
     // --- what skipping compression would buy ---------------------------------
@@ -127,7 +133,13 @@ fn main() {
     let after_skip_sqrt = total - ns_compress_bytes * 0.5;
     let after_batch_inv = total - ns_compress_bytes * 0.95;
     println!("\n  if prefix mode never compresses:");
-    println!("    skip sqrt only     {total:.0} -> {after_skip_sqrt:.0} ns  ({:.2}x)", total / after_skip_sqrt);
-    println!("    + batch inversion  {total:.0} -> {after_batch_inv:.0} ns  ({:.2}x)", total / after_batch_inv);
+    println!(
+        "    skip sqrt only     {total:.0} -> {after_skip_sqrt:.0} ns  ({:.2}x)",
+        total / after_skip_sqrt
+    );
+    println!(
+        "    + batch inversion  {total:.0} -> {after_batch_inv:.0} ns  ({:.2}x)",
+        total / after_batch_inv
+    );
     println!("\n    (suffix/contains mode still needs the sign bit, so it keeps compress.)");
 }

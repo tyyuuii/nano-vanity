@@ -18,9 +18,9 @@ use crate::engine::{self, Job, Outcome};
 /// How many finished jobs to keep around for status polling. Each retained job
 /// holds a seed and private keys in memory, so this is deliberately small.
 const MAX_JOBS: usize = 32;
-use nano_keys::MatchMode;
 use crate::qubic::Chain;
 use crate::qubic_search::{QubicJob, QubicOutcome};
+use nano_keys::MatchMode;
 
 /// A job on either chain.
 ///
@@ -210,7 +210,10 @@ fn qubic_status_json(job: &QubicJob) -> String {
     out.push_str(&format!("\"rate\":{rate:.0},"));
     out.push_str(&format!("\"expected\":{:.0},", job.expected));
     out.push_str(&format!("\"want\":{},", job.want));
-    out.push_str(&format!("\"mode\":{},", json_str(job.pattern.mode().as_str())));
+    out.push_str(&format!(
+        "\"mode\":{},",
+        json_str(job.pattern.mode().as_str())
+    ));
     out.push_str("\"max_index\":null,");
     out.push_str(&format!("\"progress\":{progress:.6},"));
 
@@ -219,7 +222,11 @@ fn qubic_status_json(job: &QubicJob) -> String {
         Some(QubicOutcome::Exhausted) => {
             // No "capped" state exists on this chain: there is no index ceiling
             // to hit. A time limit is the only way to stop early.
-            let why = if job.timed_out() { "timeout" } else { "exhausted" };
+            let why = if job.timed_out() {
+                "timeout"
+            } else {
+                "exhausted"
+            };
             out.push_str(&format!("\"state\":\"exhausted\",\"why\":\"{why}\""));
         }
         Some(QubicOutcome::Found(found)) => {
@@ -413,9 +420,22 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                 // leaves `max_index` ticked after switching chains would
                 // otherwise get a search that quietly ignores their cap.
                 for (field, present) in [
-                    ("Max account index", json_field(&body, "max_index").is_some()),
-                    ("Grind seeds", json_field(&body, "grind").map(|v| v == "true" || v == "1").unwrap_or(false)),
-                    ("Skip first character", json_field(&body, "skip_first").map(|v| v == "true" || v == "1").unwrap_or(false)),
+                    (
+                        "Max account index",
+                        json_field(&body, "max_index").is_some(),
+                    ),
+                    (
+                        "Grind seeds",
+                        json_field(&body, "grind")
+                            .map(|v| v == "true" || v == "1")
+                            .unwrap_or(false),
+                    ),
+                    (
+                        "Skip first character",
+                        json_field(&body, "skip_first")
+                            .map(|v| v == "true" || v == "1")
+                            .unwrap_or(false),
+                    ),
                 ] {
                     if present {
                         write_response(
@@ -430,11 +450,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                     }
                 }
 
-                let pattern = match crate::qubic::IdentityPattern::new(
-                    &prefix,
-                    mode,
-                    0,
-                ) {
+                let pattern = match crate::qubic::IdentityPattern::new(&prefix, mode, 0) {
                     Ok(p) => p,
                     Err(e) => {
                         write_response(

@@ -79,3 +79,17 @@ jobs:
         run: cargo build --release --locked
       - name: Cross-check against the Python oracle
         run: python3 research/cross_check.py
+      # The Qubic cross-check deliberately does not re-implement FourQ, so
+      # it needs no Python packages. It does shell out to node for the
+      # official @qubic.org/crypto package, which is the point: an
+      # independent Python FourQ would share every assumption with the Rust,
+      # including the wrong ones, and would agree with it perfectly while
+      # both were wrong.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install the official Qubic crypto package
+        working-directory: research/qubic/vectors
+        run: npm install --no-audit --no-fund
+      - name: Cross-check Qubic derivation
+        run: python3 research/qubic/cross_check.py
