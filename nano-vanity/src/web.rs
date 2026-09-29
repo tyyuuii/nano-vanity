@@ -36,13 +36,6 @@ pub enum AnyJob {
 }
 
 impl AnyJob {
-    pub fn chain(&self) -> Chain {
-        match self {
-            AnyJob::Nano(_) => Chain::Nano,
-            AnyJob::Qubic(_) => Chain::Qubic,
-        }
-    }
-
     pub fn is_running(&self) -> bool {
         match self {
             AnyJob::Nano(j) => j.is_running(),
@@ -71,13 +64,18 @@ impl AnyJob {
 struct State {
     jobs: Mutex<HashMap<u64, AnyJob>>,
     next_id: Mutex<u64>,
+    /// The chain the UI opens on, from `--chain`. Held in the state rather than
+    /// threaded through every request handler, because the only consumer is the
+    /// HTML, which is served from the same state as the jobs it creates.
+    default_chain: Chain,
 }
 
 impl State {
-    fn new() -> Self {
+    fn with_chain(default_chain: Chain) -> Self {
         Self {
             jobs: Mutex::new(HashMap::new()),
             next_id: Mutex::new(1),
+            default_chain,
         }
     }
 }
@@ -325,7 +323,9 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
             &mut stream,
             "200 OK",
             "text/html; charset=utf-8",
-            &INDEX_HTML.replace("VERSION_PLACEHOLDER", env!("CARGO_PKG_VERSION")),
+            &INDEX_HTML
+                .replace("VERSION_PLACEHOLDER", env!("CARGO_PKG_VERSION"))
+                .replace("CHAIN_PLACEHOLDER", state.default_chain.as_str()),
         ),
         ("POST", "/api/start") => {
             let prefix = json_field(&body, "prefix")
@@ -346,36 +346,21 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|&n| n > 0);
 
-            // An absent or empty seed means "draw a fresh random one", so each
-            // run lands on a different address. A supplied seed reproduces an
-            // earlier run exactly.
-            let seed = match json_field(&body, "seed") {
-                Some(s) if !s.trim().is_empty() => match crate::engine::parse_seed(&s) {
-                    Ok(seed) => seed,
-                    Err(e) => {
-                        let esc = json_str(&e);
-                        write_response(
-                            &mut stream,
-                            "400 Bad Request",
-                            "application/json",
-                            &format!("{{\"error\":{esc}}}"),
-                        )?;
-                        return Ok(());
-                    }
-                },
-                _ => match crate::engine::random_seed() {
-                    Ok(seed) => seed,
-                    Err(e) => {
-                        let esc = json_str(&e);
-                        write_response(
-                            &mut stream,
-                            "500 Internal Server Error",
-                            "application/json",
-                            &format!("{{\"error\":{esc}}}"),
-                        )?;
-                        return Ok(());
-                    }
-                },
+            // The seed's syntax depends on the chain: 64 hex for Nano, 55
+            // letters for Qubic. So only the raw string is extracted here and
+            // the parse happens inside each branch. Parsing it up front meant a
+            // Qubic request carrying its 55-letter master seed failed in the
+            // *Nano* parser and never reached the Qubic branch, so the web UI's
+            // "Master seed" field was silently broken for Qubic while the
+            // no-seed path worked fine.
+            let seed_str = json_field(&body, "seed")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+
+            // The chain is read before anything chain-specific is validated.
+            let chain = match json_field(&body, "chain").as_deref() {
+                Some("qubic") | Some("q") => Chain::Qubic,
+                _ => Chain::Nano,
             };
 
             let mode = json_field(&body, "mode")
@@ -417,11 +402,11 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
             // A Qubic request is dispatched to its own job type; the Nano
             // fields below are still parsed so a stale client that omits
             // `chain` keeps working exactly as it did.
-            let chain = match json_field(&body, "chain").as_deref() {
-                Some("qubic") | Some("q") => Chain::Qubic,
-                _ => Chain::Nano,
-            };
-
+            //
+            // Both chains run in this one server at the same time. They are
+            // separate job types, not separate servers, so a Nano search and a
+            // Qubic search can be in flight together on the same port and the
+            // status endpoint serves either, keyed by the job's own chain.
             if chain == Chain::Qubic {
                 // Qubic: no prefix anchoring, no index, no grinding. A stale
                 // Nano flag is reported rather than ignored, because a user who
@@ -461,8 +446,10 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                         return Ok(());
                     }
                 };
-                let master = match json_field(&body, "seed") {
-                    Some(s) if !s.is_empty() => match crate::qubic::parse_seed(&s) {
+                // The master seed is a 55-letter Qubic seed, parsed with the
+                // Qubic rules rather than the Nano ones.
+                let master = match seed_str {
+                    Some(ref s) => match crate::qubic::parse_seed(s) {
                         Ok(s) => s,
                         Err(e) => {
                             write_response(
@@ -474,7 +461,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                             return Ok(());
                         }
                     },
-                    _ => match crate::qubic_search::random_master() {
+                    None => match crate::qubic_search::random_master() {
                         Ok(s) => s,
                         Err(e) => {
                             write_response(
@@ -513,6 +500,39 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                 }?;
                 return Ok(());
             }
+
+            // Nano's seed parsing happens here, after the Qubic branch has
+            // returned, so each chain validates its own syntax. An absent or
+            // empty seed means "draw a fresh random one", so each run lands on
+            // a different address; a supplied seed reproduces an earlier run.
+            let seed = match seed_str {
+                Some(ref s) => match crate::engine::parse_seed(s) {
+                    Ok(seed) => seed,
+                    Err(e) => {
+                        let esc = json_str(&e);
+                        write_response(
+                            &mut stream,
+                            "400 Bad Request",
+                            "application/json",
+                            &format!("{{\"error\":{esc}}}"),
+                        )?;
+                        return Ok(());
+                    }
+                },
+                None => match crate::engine::random_seed() {
+                    Ok(seed) => seed,
+                    Err(e) => {
+                        let esc = json_str(&e);
+                        write_response(
+                            &mut stream,
+                            "500 Internal Server Error",
+                            "application/json",
+                            &format!("{{\"error\":{esc}}}"),
+                        )?;
+                        return Ok(());
+                    }
+                },
+            };
 
             let started = if grind {
                 Job::start_grinding(
@@ -613,6 +633,10 @@ pub fn serve(addr: SocketAddr, default_chain: Chain) -> std::io::Result<()> {
 }
 
 /// Serves on an already-bound listener, with an explicit starting chain.
+///
+/// Test-only in practice: this is a binary crate, so `pub` does not make an
+/// item reachable from outside and nothing but the tests calls it.
+#[cfg(test)]
 pub fn serve_listener(listener: TcpListener) -> std::io::Result<()> {
     serve_listener_with(listener, Chain::Nano)
 }
@@ -641,7 +665,7 @@ fn serve_listener_with(listener: TcpListener, default_chain: Chain) -> std::io::
     }
     println!("  Ctrl-C to stop.");
 
-    let state = Arc::new(State::new());
+    let state = Arc::new(State::with_chain(default_chain));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -724,9 +748,17 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
 </head>
 <body>
 <h1>nano-vanity</h1>
-<div class="sub">Nano (XNO) vanity address generator &middot; runs on this device</div>
+<div class="sub">Nano (XNO) and Qubic (Q) vanity generator &middot; runs on this device</div>
 
 <form id="form" autocomplete="off">
+  <div class="field">
+    <label for="chain">Chain</label>
+    <select id="chain">
+      <option value="nano">Nano (XNO) &mdash; nano_ addresses</option>
+      <option value="qubic">Qubic (Q) &mdash; 60-letter identities</option>
+    </select>
+    <div class="hint" id="chain-hint"></div>
+  </div>
   <div class="field">
     <label for="prefix">Address prefix</label>
     <div class="row" style="gap:.5rem;align-items:flex-end">
@@ -765,19 +797,19 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
       <div class="hint">Collects the N lowest matches for the seed. The last one
       sets how long the search runs.</div>
     </div>
-    <div class="field">
+    <div class="field" id="grind-field">
       <label for="grind">Search seeds (vanity on account 0)</label>
       <label class="check"><input id="grind" type="checkbox"> Grind candidate seeds instead of one
       seed's indices. This is what puts the vanity address on account 0, so importing
       the seed is the whole job.</label>
     </div>
-    <div class="field">
+    <div class="field" id="seedindex-field">
       <label for="seedindex">Account index for ground seeds</label>
       <input id="seedindex" type="number" min="0" value="0" disabled>
       <div class="hint">Used only with the box above. 0 means the vanity address is the wallet's
       first account.</div>
     </div>
-    <div class="field">
+    <div class="field" id="maxindex-field">
       <label for="maxindex">Max account index (optional)</label>
       <input id="maxindex" type="number" min="1" placeholder="no limit">
       <div class="hint">Optional ceiling on the search. Your seed can derive any account
@@ -785,10 +817,19 @@ const INDEX_HTML: &str = r##"<!DOCTYPE html>
       typing it in — you do not have to create the accounts before it. Set this
       only to make the search finish sooner.</div>
     </div>
+    <div class="field" id="qubic-only" style="display:none">
+      <div class="hint" style="border:1px solid #b45309;border-radius:.4rem;padding:.6rem;
+           background:#1c1408;color:#fcd9a0">
+        <strong>A Qubic seed is the wallet.</strong> Qubic has no account index, so a
+        55-letter seed maps to exactly one identity, forever. Every search varies the
+        seed, and whatever this tool finds <em>is</em> the wallet &mdash; there is
+        nothing else to recover from it. Write the seed down before using the identity.
+      </div>
+    </div>
     <div class="field">
-      <label for="seed">Seed (optional)</label>
+      <label for="seed" id="seed-label">Seed (optional)</label>
       <input id="seed" placeholder="random" spellcheck="false">
-      <div class="hint">Leave empty for a fresh random seed each run. Paste a seed from an
+      <div class="hint" id="seed-hint">Leave empty for a fresh random seed each run. Paste a seed from an
       earlier result to reproduce those exact addresses.</div>
     </div>
   </details>
@@ -877,9 +918,9 @@ async function start(ev) {
   err('');
   $('result').hidden = true;
   const prefix = $('prefix').value.trim();
-  if (!prefix) { err('Enter a prefix.'); return; }
+  if (!prefix) { err(chainName() === 'Qubic' ? 'Enter a pattern.' : 'Enter a prefix.'); return; }
 
-  const body = { prefix };
+  const body = { prefix, chain: $('chain').value };
   if ($('threads').value) body.threads = parseInt($('threads').value, 10);
   if ($('seconds').value) body.seconds = parseInt($('seconds').value, 10);
   body.mode = $('mode').value;
@@ -988,7 +1029,14 @@ async function tick() {
       };
       add(results.length > 1 ? '#' + (i + 1) + ' address' : 'address', r.address, 'addr');
       add('private key', r.private_key);
-      add('account index', r.index);
+      // A Qubic result has no account index and carries its own seed, which is
+      // the wallet. Showing "account index: null" would be worse than showing
+      // the field that actually matters.
+      if (data.chain === 'qubic') {
+        add('seed — this IS the wallet', r.seed, 'seed');
+      } else {
+        add('account index', r.index);
+      }
       $('r-list').appendChild(card);
     });
     let title = results.length === 1
@@ -997,13 +1045,21 @@ async function tick() {
     if (results.length < (data.want || 1)) {
       title += ' Wanted ' + data.want + ' — raise the time limit for more.';
     }
-    // A high account index means the seed cannot restore the address without
-    // walking every earlier account, so say so instead of implying it can.
-    const highest = Math.max.apply(null, results.map(r => r.index));
-    if (highest > 1000) {
-      title += ' Import the PRIVATE KEY, not the seed: reaching account ' +
-        highest + ' would mean adding ' + highest +
-        ' accounts first. Set "Max account index" to get a reachable one.';
+    if (data.chain === 'qubic') {
+      // The single most important sentence the tool can say about a Qubic hit.
+      // There is no account index to fall back on, so the seed is the whole
+      // wallet and losing it loses the identity permanently.
+      title += ' The seed above is the entire wallet: Qubic has no account index, ' +
+        'so write it down before using the identity.';
+    } else {
+      // A high account index means the seed cannot restore the address without
+      // walking every earlier account, so say so instead of implying it can.
+      const highest = Math.max.apply(null, results.map(r => r.index));
+      if (highest > 1000) {
+        title += ' Import the PRIVATE KEY, not the seed: reaching account ' +
+          highest + ' would mean adding ' + highest +
+          ' accounts first. Set "Max account index" to get a reachable one.';
+      }
     }
     $('r-title').textContent = title;
     $('result').hidden = false;
@@ -1085,7 +1141,13 @@ function flash(id) {
 }
 
 // Keep the help text honest about what the selected mode will actually do.
-const HINTS = {
+//
+// The Nano hints describe a `nano_` address body: a `1`/`3` anchor, and a
+// checksum occupying the last 8 characters. None of that applies to a Qubic
+// identity, which is 56 base-26 characters plus 4 checksum characters and has
+// no anchored leading character, so the two chains get their own hint tables
+// rather than one table with branches in the text.
+const NANO_HINTS = {
   prefix: {
     main: 'Must start with <code>1</code> or <code>3</code>. Up to 12 characters.',
     skip: 'Match from the <em>second</em> character, so <code>test</code> finds ' +
@@ -1104,18 +1166,97 @@ const HINTS = {
   }
 };
 
+const QUBIC_HINTS = {
+  prefix: {
+    main: 'Letters <code>A</code>&ndash;<code>Z</code> against the 60-character identity. ' +
+          'The first character tracks the <em>low</em> bits of the public key, ' +
+          'not the high ones.',
+    skip: null
+  },
+  suffix: {
+    main: 'The last 4 characters are a K12 checksum, so this is checked against ' +
+          'the real identity rather than just the key.',
+    skip: null
+  },
+  contains: {
+    main: 'Matches anywhere in the 60-character identity, so roughly 60x likelier ' +
+          'per character than a prefix.',
+    skip: null
+  }
+};
+
+const CHAIN_HINTS = {
+  nano: 'One 64-hex seed. The search scans that seed\'s account indices, so the ' +
+        'seed is reusable and the result is not the whole wallet.',
+  qubic: 'A 55-letter lowercase seed. There is no account index, so the search ' +
+         'varies the seed itself and a found seed <em>is</em> the wallet. ' +
+         'FourQ costs about 2.4x a Nano candidate per unit of matching, so ' +
+         'prefer <code>contains</code> or <code>suffix</code> over a long prefix.'
+};
+
+function chainName() {
+  return $('chain').value === 'qubic' ? 'Qubic' : 'Nano';
+}
+
+function syncChain() {
+  const q = $('chain').value === 'qubic';
+  $('chain-hint').innerHTML = CHAIN_HINTS[$('chain').value] || '';
+
+  // These four are Nano-only. They are hidden rather than disabled: a visible
+  // greyed-out field invites the question of why it stopped working, and the
+  // server rejects them outright anyway, so hiding is the honest signal.
+  $('grind-field').style.display = q ? 'none' : '';
+  $('seedindex-field').style.display = q ? 'none' : '';
+  $('maxindex-field').style.display = q ? 'none' : '';
+  $('qubic-only').style.display = q ? '' : 'none';
+
+  // The leading-character trick is a Nano concept. On Qubic, `identity[0]`
+  // already varies uniformly, so there is no factor-of-2 saving to be had and
+  // the row is hidden for both prefix and non-prefix modes.
+  $('skipfirst-row').style.display = q ? 'none' : '';
+  $('skipfirst').checked = false;
+
+  $('prefix').placeholder = q ? 'AB' : '1111';
+  if (q) $('prefix').value = ($('prefix').value || '').toUpperCase();
+  $('seed-label').textContent = q ? 'Master seed (optional)' : 'Seed (optional)';
+  $('seed').placeholder = q ? 'random' : 'random';
+  $('seed-hint').innerHTML = q
+    ? 'Leave empty for a fresh random master seed each run. On Qubic this seeds ' +
+      'the <em>candidate stream</em>, not the result: each match reports the ' +
+      '55-letter seed that worked, and that seed is the wallet.'
+    : 'Leave empty for a fresh random seed each run. Paste a seed from an ' +
+      'earlier result to reproduce those exact addresses.';
+
+  // Counts read very differently between the chains, so say so where the user
+  // sets the number rather than leaving them to discover it from a wait.
+  $('count').parentElement.querySelector('.hint').innerHTML = q
+    ? 'Collects the N lowest matching candidates. Qubic is about 2.4x slower per ' +
+      'candidate than Nano, so a 4-character prefix is a multi-day search even on ' +
+      'every core.'
+    : 'Collects the N lowest matches for the seed. The last one sets how long the ' +
+      'search runs.';
+
+  syncHints();
+}
+
 function syncHints() {
-  const h = HINTS[$('mode').value] || HINTS.prefix;
+  const table = $('chain').value === 'qubic' ? QUBIC_HINTS : NANO_HINTS;
+  const h = table[$('mode').value] || table.prefix;
   $('prefix-hint').innerHTML = h.main;
+  const q = $('chain').value === 'qubic';
   const isPrefix = $('mode').value === 'prefix';
-  // The leading-character trick only means something for a prefix.
-  $('skipfirst-row').style.display = isPrefix ? '' : 'none';
-  $('skipfirst').disabled = !isPrefix;
-  $('skipfirst-hint').innerHTML = isPrefix ? (h.skip || '') : '';
+  // The leading-character trick only means something for a Nano prefix.
+  $('skipfirst-row').style.display = (isPrefix && !q) ? '' : 'none';
+  $('skipfirst').disabled = !isPrefix || q;
+  $('skipfirst-hint').innerHTML = (isPrefix && !q) ? (h.skip || '') : '';
 }
 
 $('mode').addEventListener('change', syncHints);
-syncHints();
+$('chain').addEventListener('change', syncChain);
+// The starting chain comes from `--chain` on the command line, so the UI opens
+// on whichever chain the user actually launched the tool for.
+$('chain').value = 'CHAIN_PLACEHOLDER';
+syncChain();
 
 $('form').addEventListener('submit', start);
 $('stop').addEventListener('click', cancel);

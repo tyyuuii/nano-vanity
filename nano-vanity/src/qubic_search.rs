@@ -34,7 +34,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 
-use crate::qubic::{derive_candidate, random_seed, Candidate, Chain, IdentityPattern};
+use crate::qubic::{derive_candidate, random_seed, IdentityPattern, Keys};
 
 /// Candidates claimed per block. Mirrors `engine::BLOCK`.
 const BLOCK: u64 = 2048;
@@ -70,18 +70,6 @@ pub struct Found {
     pub attempt: u64,
 }
 
-impl Found {
-    pub fn candidate(&self) -> Candidate {
-        Candidate::Qubic {
-            seed: self.seed.clone(),
-            subseed: self.subseed,
-            private_key: self.private_key,
-            public_key: self.public_key,
-            identity: self.identity.clone(),
-        }
-    }
-}
-
 struct Slot {
     outcome: Option<QubicOutcome>,
     elapsed: f64,
@@ -90,7 +78,6 @@ struct Slot {
 
 /// A running or finished Qubic search.
 pub struct QubicJob {
-    pub chain: Chain,
     pub pattern: IdentityPattern,
     pub threads: usize,
     pub expected: f64,
@@ -100,7 +87,6 @@ pub struct QubicJob {
     pub time_limit: Option<u64>,
     started: Instant,
     stop: Arc<AtomicBool>,
-    counter: Arc<AtomicU64>,
     slot: Arc<(Mutex<Slot>, Condvar)>,
 }
 
@@ -132,7 +118,6 @@ impl QubicJob {
         ));
 
         let job = Arc::new(QubicJob {
-            chain: Chain::Qubic,
             pattern: pattern.clone(),
             threads,
             expected,
@@ -140,7 +125,6 @@ impl QubicJob {
             time_limit: seconds,
             started: Instant::now(),
             stop: Arc::clone(&stop),
-            counter: Arc::clone(&counter),
             slot: Arc::clone(&slot),
         });
 
@@ -206,16 +190,13 @@ impl QubicJob {
                         break;
                     }
 
-                    let Candidate::Qubic {
+                    let Keys {
                         seed,
                         subseed,
                         private_key,
                         public_key,
                         identity,
-                    } = derive_candidate(&master, i)
-                    else {
-                        unreachable!("derive_candidate always returns a Qubic candidate");
-                    };
+                    } = derive_candidate(&master, i);
                     counter.fetch_add(1, Ordering::Relaxed);
 
                     if pattern.matches(&identity) {
@@ -429,7 +410,7 @@ mod tests {
         let f = derive_once(&"b".repeat(55)).unwrap();
         assert_eq!(f.seed, "b".repeat(55));
         assert_eq!(f.identity.len(), 60);
-        assert!(crate::qubic::validate_identity(&f.identity).is_ok());
+        assert!(nano_keys::qubic::identity::is_valid_identity(&f.identity));
     }
 
     #[test]

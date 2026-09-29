@@ -19,7 +19,7 @@
 //! when they print a result.
 
 use nano_keys::qubic::identity::{
-    derive_keys, is_valid_identity, public_key_to_identity, seed_to_bytes,
+    derive_keys, public_key_to_identity, seed_to_bytes,
     IDENTITY_LENGTH, SEED_LENGTH,
 };
 use nano_keys::MatchMode;
@@ -42,40 +42,25 @@ impl Chain {
     }
 }
 
-/// A derived candidate, chain-specific.
+/// The output of a Qubic derivation.
+///
+/// This started life as a `Candidate` enum with a variant per chain, on the
+/// assumption that both chains would funnel through one representation. They
+/// did not: `engine::Found` and `qubic_search::Found` are separate types,
+/// because the two searches have almost nothing in common (account indices
+/// versus seeds, a 64-hex seed versus a 55-letter one). With the enum never
+/// gaining a second variant, it was dead weight, so it is now just the data it
+/// always actually was.
+///
+/// `seed` is the important field: **this is the wallet.** Qubic has no account
+/// index, so one seed maps to exactly one identity, forever.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Candidate {
-    Nano {
-        seed: [u8; 32],
-        index: u32,
-        private_key: [u8; 32],
-        address: String,
-    },
-    Qubic {
-        /// The 55-letter seed. **This is the wallet.**
-        seed: String,
-        subseed: [u8; 32],
-        private_key: [u8; 32],
-        public_key: [u8; 32],
-        identity: String,
-    },
-}
-
-impl Candidate {
-    /// The chain's user-facing name for the result.
-    pub fn address(&self) -> &str {
-        match self {
-            Candidate::Nano { address, .. } => address,
-            Candidate::Qubic { identity, .. } => identity,
-        }
-    }
-
-    pub fn chain(&self) -> Chain {
-        match self {
-            Candidate::Nano { .. } => Chain::Nano,
-            Candidate::Qubic { .. } => Chain::Qubic,
-        }
-    }
+pub struct Keys {
+    pub seed: String,
+    pub subseed: [u8; 32],
+    pub private_key: [u8; 32],
+    pub public_key: [u8; 32],
+    pub identity: String,
 }
 
 /// A 55-letter lowercase Qubic seed from OS entropy.
@@ -182,12 +167,12 @@ impl IdentityPattern {
     }
 }
 
-/// Derive the candidate for a given attempt number.
+/// Derive the keys for a given attempt number.
 ///
 /// Reproducible: the same master seed always produces the same sequence of
 /// candidates, so a search can be re-run and will find the same winners. This
 /// is the Qubic analogue of Nano's `Blake2b-256(master ‖ attempt_be)`.
-pub fn derive_candidate(master: &str, attempt: u64) -> Candidate {
+pub fn derive_candidate(master: &str, attempt: u64) -> Keys {
     // A 64-bit attempt counter is folded in so attempt N and N+1 differ.
     let mut salt = [0u8; 8];
     salt.copy_from_slice(&attempt.to_be_bytes());
@@ -197,7 +182,7 @@ pub fn derive_candidate(master: &str, attempt: u64) -> Candidate {
     let seed = seed_from_bytes(&material);
 
     match derive_keys(&seed) {
-        Ok(d) => Candidate::Qubic {
+        Ok(d) => Keys {
             seed,
             subseed: d.subseed,
             private_key: d.private_key,
@@ -208,7 +193,7 @@ pub fn derive_candidate(master: &str, attempt: u64) -> Candidate {
         // unreachable. Falling back keeps the search total rather than
         // panicking a worker thread on an invariant that a future refactor
         // could break.
-        Err(_) => Candidate::Qubic {
+        Err(_) => Keys {
             seed: "a".repeat(SEED_LENGTH),
             subseed: [0u8; 32],
             private_key: [0u8; 32],
@@ -218,18 +203,10 @@ pub fn derive_candidate(master: &str, attempt: u64) -> Candidate {
     }
 }
 
-/// Validate a Qubic identity, for the `--derive` path.
-pub fn validate_identity(identity: &str) -> Result<(), String> {
-    if is_valid_identity(identity) {
-        Ok(())
-    } else {
-        Err(format!("not a valid Qubic identity: {identity}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nano_keys::qubic::identity::is_valid_identity;
 
     const ID: &str = "BZBQFLLBNCXEMGLOBHUVFTLUPLVCPQUASSILFABOFFBCADQSSUPNWLZBQEXK";
 
@@ -295,6 +272,18 @@ mod tests {
     }
 
     #[test]
+    fn every_candidate_carries_its_own_seed() {
+        // The seed is the wallet, so it must travel with the identity it
+        // produced. A candidate that kept the master seed instead would report
+        // a seed that does not derive the address printed next to it.
+        let k = derive_candidate("m".repeat(55).as_str(), 3);
+        let d = nano_keys::qubic::identity::derive_keys(&k.seed).unwrap();
+        assert_eq!(d.identity, k.identity);
+        assert_eq!(d.public_key, k.public_key);
+        assert_ne!(k.seed, "m".repeat(55));
+    }
+
+    #[test]
     fn consecutive_attempts_differ() {
         let a = derive_candidate("master-seed-for-testing-only", 1);
         let b = derive_candidate("master-seed-for-testing-only", 2);
@@ -304,11 +293,8 @@ mod tests {
     #[test]
     fn derived_candidates_are_valid_identities() {
         for attempt in 0..5 {
-            let Candidate::Qubic { identity, seed, .. } =
-                derive_candidate("master-seed-for-testing-only", attempt)
-            else {
-                panic!("expected a Qubic candidate");
-            };
+            let Keys { identity, seed, .. } =
+                derive_candidate("master-seed-for-testing-only", attempt);
             assert_eq!(identity.len(), IDENTITY_LENGTH);
             assert!(
                 is_valid_identity(&identity),
