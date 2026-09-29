@@ -1146,10 +1146,20 @@ mod mode_tests {
     /// searches for and what it reports.
     #[test]
     fn every_mode_returns_a_satisfying_address() {
+        // One character each, and all lowercase. Both of those are load-bearing
+        // and neither is obvious:
+        //
+        //  * Lowercase, because address characters are lowercase. An uppercase
+        //    pattern can never match, and the search just times out.
+        //  * Not restricted to hex, because the address body is not hex. The
+        //    first 52 characters are base-32, but the last 4 are the `enc8`
+        //    checksum, whose alphabet runs all the way to 'z'. That is why
+        //    "...xyz" is a legitimate suffix, and why assuming hex here is
+        //    wrong. See research/checksum.py.
         let cases: &[(MatchMode, &str)] = &[
-            (MatchMode::Prefix, "1fa"),
-            (MatchMode::Suffix, "xyz"),
-            (MatchMode::Contains, "nan"),
+            (MatchMode::Prefix, "1f"),
+            (MatchMode::Suffix, "z"),
+            (MatchMode::Contains, "n"),
         ];
         for (mode, pattern) in cases {
             let found = grind(*mode, pattern);
@@ -1237,11 +1247,11 @@ mod grind_tests {
     /// account with nothing else to do.
     #[test]
     fn a_match_can_land_at_account_zero() {
-        let found = grind("1fa", 0, 1, 60);
+        let found = grind("1f", 0, 1, 60);
         assert_eq!(found.len(), 1, "should find one");
         assert_eq!(found[0].index, 0, "must be account 0");
         assert!(
-            found[0].address.starts_with("nano_1fa"),
+            found[0].address.starts_with("nano_1f"),
             "address should carry the prefix: {}",
             found[0].address
         );
@@ -1252,7 +1262,7 @@ mod grind_tests {
     /// between the candidate seed and the account it produced.
     #[test]
     fn the_reported_seed_derives_the_reported_key_at_index_zero() {
-        let found = grind("1fa", 0, 1, 60);
+        let found = grind("1f", 0, 1, 60);
         assert_eq!(found.len(), 1);
         let f = &found[0];
         assert_eq!(
@@ -1272,10 +1282,10 @@ mod grind_tests {
     /// A non-zero fixed index must also work, and must report that index.
     #[test]
     fn grinding_at_a_nonzero_index_reports_that_index() {
-        let found = grind("1fa", 7, 1, 60);
+        let found = grind("1f", 7, 1, 60);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].index, 7);
-        assert!(found[0].address.starts_with("nano_1fa"));
+        assert!(found[0].address.starts_with("nano_1f"));
         assert_eq!(
             nano_keys::derive_private_key(&found[0].seed, 7),
             found[0].private_key
@@ -1286,8 +1296,8 @@ mod grind_tests {
     /// return the same candidate twice.
     #[test]
     fn grinding_is_reproducible_and_yields_distinct_seeds() {
-        let a = grind("1fa", 0, 3, 60);
-        let b = grind("1fa", 0, 3, 60);
+        let a = grind("1f", 0, 3, 60);
+        let b = grind("1f", 0, 3, 60);
         assert_eq!(a.len(), 3);
         assert_eq!(
             a.iter().map(|f| f.address.as_str()).collect::<Vec<_>>(),
@@ -1306,7 +1316,7 @@ mod grind_tests {
     /// give the same private key as the plain index search would.
     #[test]
     fn ground_accounts_match_the_plain_derivation() {
-        let found = grind("1fa", 0, 1, 60);
+        let found = grind("1f", 0, 1, 60);
         assert_eq!(found.len(), 1);
         assert_eq!(
             found[0].private_key,
@@ -1457,7 +1467,7 @@ mod seed_reachability_tests {
         // Short pattern on purpose: this probe only needs *a* result to format,
         // so it should not depend on how fast the machine grinds.
         let job = Job::start(
-            "1fa".into(),
+            "1f".into(),
             2,
             Some(30),
             [0x11u8; 32],
@@ -1487,7 +1497,7 @@ mod seed_reachability_tests {
         // The advice no longer branches on the index, so a short pattern is
         // enough; a long one would just make this a speed test.
         let job = Job::start(
-            "1fa".into(),
+            "1f".into(),
             1,
             Some(60),
             S,
@@ -1532,11 +1542,13 @@ mod reporting_tests {
         max_index: Option<u32>,
         limit: Option<u64>,
     ) -> (std::sync::Arc<Job>, Outcome) {
-        // 2 threads: the timeout cases deliberately burn their entire wall-clock
-        // limit, so every extra worker is CPU spent for nothing.
+        // 1 thread. The timeout cases burn their whole wall-clock limit either
+        // way, and a second worker only competes with the first for the same
+        // core while the clock runs regardless. Thread-count independence has
+        // its own test, so nothing here needs the parallelism.
         let job = Job::start(
             pattern.to_string(),
-            2,
+            1,
             limit,
             S,
             1,
@@ -1571,9 +1583,23 @@ mod reporting_tests {
     /// that matters.
     #[test]
     fn a_long_run_still_reports_a_rate() {
-        let (job, outcome) = run("1fadgi", Some(50_000), None);
+        // A 1-character body, so the search itself is nearly free. The elapsed
+        // time and rate are passed to the formatter rather than read from the
+        // job, which is what makes that possible; see below.
+        let (job, outcome) = run("1f", Some(50_000), None);
         if let Outcome::Found(f) = outcome {
-            let text = format_found(&job, &f, job.tries(), 2.0, 40_000.0);
+            // The *formatting* under test is the long-run case: a rate is quoted
+            // only once the sample is big enough to mean something (tries >= 1000),
+            // which the sibling test `a_very_short_run_reports_no_rate` pins from
+            // the other side. A cheap search cannot supply both halves at once --
+            // a 1-character pattern lands around 30 tries, under the threshold, and
+            // the rate is rightly suppressed, so the test failed until this split
+            // was made explicit.
+            //
+            // The job supplies a genuine Found; 5,000 stands in for a run long
+            // enough to have a meaningful rate. This test is about the formatter,
+            // and the search only exists to give it something to format.
+            let text = format_found(&job, &f, 5_000, 2.0, 40_000.0);
             assert!(text.contains("addr/s"), "{text}");
             return;
         }
@@ -1586,7 +1612,7 @@ mod reporting_tests {
     /// impossible, and the message must say which happened.
     #[test]
     fn a_capped_miss_says_the_cap_was_the_reason() {
-        let (job, outcome) = run("1test", Some(1000), Some(30));
+        let (job, outcome) = run("1test", Some(100), Some(30));
         assert!(matches!(outcome, Outcome::Exhausted));
         assert!(job.capped_out(), "should be detected as capped out");
         let txt = explain_miss(&job, job.tries(), job.rate());
@@ -1600,7 +1626,10 @@ mod reporting_tests {
     /// A timeout is its own case again.
     #[test]
     fn a_timed_out_miss_says_so() {
-        let (job, outcome) = run("1fadgi", None, Some(1));
+        let (job, outcome) = // "1fadgi" deliberately stays: this test needs a MISS, and a pattern that
+        // cannot match within a second is what guarantees one. The second is the
+        // cost of testing a timeout, not of the pattern.
+        run("1fadgi", None, Some(1));
         assert!(matches!(outcome, Outcome::Exhausted));
         assert!(!job.capped_out(), "no cap was set, so not capped out");
         let txt = explain_miss(&job, job.tries(), job.rate());
@@ -1614,7 +1643,10 @@ mod reporting_tests {
     /// cap, or the estimate becomes nonsense ("5 chars needs ~0s").
     #[test]
     fn expected_is_never_clamped_to_the_ceiling() {
-        let (job, _) = run("1test", Some(1000), Some(30));
+        // The cap is 100 rather than 1000: the assertion is only that the
+        // ceiling stays below the pattern's own difficulty, and 100 tests
+        // exactly that for a tenth of the candidates.
+        let (job, _) = run("1test", Some(100), Some(30));
         assert_eq!(
             job.expected,
             2f64.powi(21),

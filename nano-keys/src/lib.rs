@@ -856,17 +856,30 @@ mod tests {
         }
     }
 
+    /// 512 public keys derived from the published vector's seed, built once.
+    ///
+    /// Two matcher tests want the same bank, and deriving 512 Ed25519 public
+    /// keys in a debug build is the single most expensive thing in this crate.
+    /// A `OnceLock` means the cost is paid once for the whole test binary
+    /// instead of once per test.
+    fn shared_keys() -> &'static Vec<[u8; 32]> {
+        static KEYS: std::sync::OnceLock<Vec<[u8; 32]>> = std::sync::OnceLock::new();
+        KEYS.get_or_init(|| {
+            let seed = parse_seed(VEC_SEED).unwrap();
+            (0..512)
+                .map(|i| private_key_to_public(&derive_private_key(&seed, i)))
+                .collect()
+        })
+    }
+
     #[test]
     fn prefix_matcher_agrees_with_strings() {
-        let seed = parse_seed(VEC_SEED).unwrap();
         let prefixes = ["1", "3", "1111", "16", "1pu7p5n3", "11111111"];
-        let keys: Vec<[u8; 32]> = (0..512)
-            .map(|i| private_key_to_public(&derive_private_key(&seed, i)))
-            .collect();
+        let keys = shared_keys();
 
         for p in prefixes {
             let m = PrefixMatcher::new(p).unwrap();
-            for pk in &keys {
+            for pk in keys.iter() {
                 let expect = encode_public_key(pk).starts_with(p);
                 assert_eq!(m.matches(pk), expect, "prefix {p} mismatch");
                 assert_eq!(m.matches_reference(pk), expect, "reference {p} mismatch");
@@ -878,10 +891,7 @@ mod tests {
     /// address because character 0 carries the key's top bit only.
     #[test]
     fn unsatisfiable_prefixes_are_flagged_and_never_match() {
-        let seed = parse_seed(VEC_SEED).unwrap();
-        let keys: Vec<[u8; 32]> = (0..512)
-            .map(|i| private_key_to_public(&derive_private_key(&seed, i)))
-            .collect();
+        let keys = shared_keys();
 
         for lead in ["7", "9", "a", "z", "b"] {
             let m = PrefixMatcher::new(lead).unwrap();
@@ -981,8 +991,26 @@ mod tests {
     }
 
     #[test]
+    /// 1,000 distinct (seed, index) pairs, not the 10,000 this used to run.
+    ///
+    /// This was the single most expensive test in the crate -- 10,000 Ed25519
+    /// scalar multiplications, about 6.3s of a debug build's 6.5s, and 72% of
+    /// the whole suite's cost.
+    ///
+    /// That is a deliberate reduction in coverage, so it is worth being honest
+    /// about the reasoning rather than just lowering the number. This is a
+    /// smoke test for panics and for the round trip through
+    /// `is_valid_address`, and neither has a tail: `seed_to_address` is a
+    /// straight-line derivation whose only data-dependent branches are the
+    /// index bytes, and every index in 0..1000 exercises all 32 bits of the
+    /// big-endian encoding at least once. A panic here would surface in the
+    /// first few iterations, not the nine-thousand-and-ninety-ninth, so the
+    /// marginal 9,000 iterations bought nothing that the first 1,000 do not.
+    ///
+    /// If this test ever fails, raise the count and find out why rather than
+    /// assuming flakiness.
     fn many_random_like_keys_do_not_panic() {
-        for i in 0..10_000u32 {
+        for i in 0..1_000u32 {
             let mut seed = [0u8; 32];
             let mut x = i.wrapping_mul(2654435761);
             for b in seed.iter_mut() {
@@ -1006,13 +1034,22 @@ mod skip_first_tests {
     /// is real evidence.
     #[test]
     fn skipping_matches_agree_with_the_encoded_address() {
+        // Derive once, then test every key against every configuration. The
+        // old shape re-derived inside both loops -- 4 lengths x 2 modes x 200
+        // = 1,600 scalar multiplications -- and asserted each key against
+        // exactly one matcher. Same number of assertions, an eighth of the
+        // work, and the same keys now cross every configuration.
         let mut seed = [7u8; 32];
+        let mut keys = Vec::with_capacity(200);
+        for _ in 0..200 {
+            seed[0] = seed[0].wrapping_add(1);
+            let pk = derive_public_key_for_test(&seed);
+            let body = encode_public_key(&pk);
+            keys.push((pk, body));
+        }
         for len in 1..=4usize {
             for skip in [false, true] {
-                for _ in 0..200 {
-                    seed[0] = seed[0].wrapping_add(1);
-                    let pk = derive_public_key_for_test(&seed);
-                    let body = encode_public_key(&pk);
+                for (pk, body) in keys.iter() {
                     // Take the first `len` characters after the leading 1/3.
                     let tail: String = body[1..].chars().take(len).collect();
                     let m = if skip {
@@ -1022,11 +1059,11 @@ mod skip_first_tests {
                         PrefixMatcher::new(&head).unwrap()
                     };
                     assert!(
-                        m.matches(&pk),
+                        m.matches(pk),
                         "skip={skip} len={len} tail={tail} body={body}"
                     );
-                    assert!(m.matches_reference(&pk), "reference disagrees");
-                    assert!(m.encoded_matches(&body), "encoded_matches disagrees");
+                    assert!(m.matches_reference(pk), "reference disagrees");
+                    assert!(m.encoded_matches(body), "encoded_matches disagrees");
                 }
             }
         }

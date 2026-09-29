@@ -1458,15 +1458,19 @@ mod tests {
         assert_json_ok(&status_json(&job), "running");
 
         // found
+        // 1 thread and a cap of 100. What is under test is that the status
+        // payload is valid JSON in the "found" state, not that a 1,000-index
+        // scan succeeds, so a tenth of the indices and no parallelism is
+        // plenty. Thread-count independence has its own test.
         let done = Job::start(
             "11".into(),
-            2,
+            1,
             Some(30),
             [7u8; 32],
             1,
             false,
             MatchMode::Prefix,
-            Some(1000),
+            Some(100),
         )
         .unwrap();
         done.wait_timeout(Duration::from_secs(60))

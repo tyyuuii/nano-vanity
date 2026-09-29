@@ -395,8 +395,13 @@ mod tests {
     #[test]
     fn a_search_stops_on_its_time_limit() {
         let pattern = IdentityPattern::new("ZZZZZZ", MatchMode::Prefix, 0).unwrap();
-        let job = QubicJob::start(pattern, 2, Some(1), &"a".repeat(55), 1).unwrap();
+        let job = QubicJob::start(pattern, 1, Some(1), &"a".repeat(55), 1).unwrap();
         let outcome = job.wait();
+        // One thread, and a time limit of one second. The one second is
+        // irreducible -- the test is that a time limit actually stops the
+        // search, which cannot be observed without waiting one out -- but a
+        // second worker only competes for the same core while the clock runs.
+        //
         // Nothing that improbable is found in a second, so the honest result is
         // "no answer", not a fake hit.
         assert!(matches!(outcome, QubicOutcome::Exhausted));
