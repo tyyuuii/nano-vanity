@@ -595,3 +595,111 @@ sign of x, and that sign bit is the *last* bit, so it can only ever affect a
 suffix. Skipping it for prefix mode, and amortising the normalisation with
 `AffineNielsPoint::batch_invert`, is worth a measured **1.25x** with no new
 dependency. Suffix and contains modes must keep `compress()` and gain nothing.
+
+## 11. Qubic: three silent ways to get a valid-looking wrong answer
+
+Qubic is a mode of this tool rather than a separate program, so the crypto
+lives under `nano-keys/src/qubic/` and touches none of the Nano code. Three
+bugs turned up while building it, and all three share a property worth naming:
+**each produced output that looked completely reasonable.** None of them threw,
+none of them produced an obviously malformed address, and in two cases the
+implementation was internally self-consistent the whole time.
+
+### 11.1 The identity encoding runs the other way
+
+A Qubic identity reads the 32-byte public key as four **little-endian** u64
+fragments and writes each as 14 base-26 digits with the **least significant
+digit first**. The checksum is four more digits from 18 bits of K12 over the
+public key.
+
+So `identity[0]` depends on the *low* bits of the public key. This is the
+opposite of Nano's `enc52`, which is emitted most-significant-first, and it is
+the opposite of the intuition the rest of this document teaches. Carrying the
+Nano model across produces a 60-character string that passes a length check, a
+charset check and looks like an address, and belongs to nobody. The test
+`leading_character_tracks_the_low_bytes_of_the_public_key` exists purely to
+stop a future "optimisation" from flipping it.
+
+Contract identities are the cheapest way to exercise the encoding without
+touching the seed path at all: the identity of a small integer is just the
+integer's public key, so index 1 must give `BAAA…`, index 2 `CAAA…`, index 4
+`EAAA…` — and index 4 matches the QUTIL address quoted in Qubic's own
+documentation.
+
+### 11.2 Negating a point does not negate its coordinates
+
+The reference's `r2Neg` **swaps** `addYX` with `subYX` and negates `dt2`. The
+tempting reading — negate `x` and `y` and carry on — is wrong, and it is wrong
+in a way that does not announce itself. The sign flip propagates through the
+ladder, `Z` eventually reaches zero, and the only visible symptom is the
+inversion in `to_affine` aborting on a zero element, long after the point had
+been treated as a perfectly good group element.
+
+### 11.3 A multi-precision borrow that is correct alone and wrong in a loop
+
+`sub_div16` computes `(x − y) / 16` over a 320-bit value, with `y` sign-extended
+into the upper limbs. The first cut composed `sign_ext + borrow` into a single
+`overflowing_sub`. That is not equivalent to subtracting `y` and the borrow
+separately:
+
+```
+sign_ext = 0xFFFF_FFFF_FFFF_FFFF,  borrow = 1  ->  sign_ext + borrow = 0
+x − 0            reports "no borrow"
+```
+
+so every higher limb silently gained one. In isolation the function looked
+perfect — it was correct for `y = 0`, and correct for any `y` that did not
+overflow — and it was wrong for every signed `y`, which is most of them.
+
+The only visible symptom was a recoded top digit falling outside the odd
+multiple table, so the ladder selected a **zero** point, and the identity came
+out wrong. The borrow is now taken from the comparison rather than from a
+wrapped subtraction's overflow flag.
+
+### Why these survived, and what caught them
+
+Nothing internal would have caught any of the three. A self-consistent
+implementation agrees with itself perfectly. Every one was caught by something
+external:
+
+| Bug | Found by |
+|---|---|
+| identity digit order | contract identities 1/2/4, checked against Qubic's docs |
+| `r2Neg` | `to_affine` aborting on a zero inversion |
+| `sub_div16` borrow | the six official golden vectors |
+| seed search produced a plausible but wrong seed set | re-deriving a *found* seed through the official npm package |
+
+That last row is the one worth keeping. The golden vectors use seeds chosen in
+advance, so they would pass even if candidate generation were biased. Feeding a
+seed the search *discovered* back through the official package closes that gap,
+and it is now part of `research/qubic/cross_check.py`.
+
+### And one that was mine, in the checker itself
+
+Worth recording because the cross-check is the thing people trust, so a bug
+there is the expensive kind. The Tonelli-Shanks square root used to check the
+FourQ curve equation searched for a quadratic non-residue among elements of
+`Fp`. It can never find one:
+
+```
+n^((p²−1)/2) = (n^(p−1))^((p+1)/2) = (±1)^(2^126) = 1
+```
+
+because `(p+1)/2 = 2^126` is even. **Every** non-zero element of `Fp` is already
+a square in `Fq`, so that search is an infinite loop. It has to look at elements
+with a non-zero imaginary part.
+
+A second one in the same file: the sign bit of X lives in bit 127 of the
+imaginary half of the public key, so it must be masked off before that half is
+read as a field element. Reducing with `% P` instead wraps the bit into the low
+bits, which yields a plausible Y that is not a curve point — and it made five of
+the six golden keys look off-curve. Both are now documented at the function.
+
+### What is not claimed
+
+FourQ over `Fp = 2^127 − 1` is a different curve family from Ed25519 over
+`2^255 − 19`. The two are unrelated despite both being twisted Edwards curves,
+and nothing in this implementation is compatible with curve25519-dalek. The
+reference files under `research/qubic/` belong to the Qubic project under its
+own licence and are research material only: nothing there is compiled or
+vendored.

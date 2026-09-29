@@ -71,16 +71,24 @@ fn main() {
     });
 
     // --- correctness: the two majors must agree bit for bit -----------------
-    let v4 = (T4 * &S4::from_bytes_mod_order(scalar_bytes(0))).compress().to_bytes();
-    let v5 = (T5 * &S5::from_bytes_mod_order(scalar_bytes(0))).compress().to_bytes();
+    let v4 = (T4 * &S4::from_bytes_mod_order(scalar_bytes(0)))
+        .compress()
+        .to_bytes();
+    let v5 = (T5 * &S5::from_bytes_mod_order(scalar_bytes(0)))
+        .compress()
+        .to_bytes();
     println!("\n  agreement 4.1.3 == 5.0.0:  {}", v4 == v5);
     println!("  multiply speedup:            {:.3}x", mul4 / mul5);
 
     // --- compression, for completeness --------------------------------------
     let p4 = T4 * &S4::from_bytes_mod_order(scalar_bytes(0));
     let p5 = T5 * &S5::from_bytes_mod_order(scalar_bytes(0));
-    let cmp4 = bench("4.1.3  compress", iters, |_| black_box(&p4).compress().to_bytes()[0]);
-    let cmp5 = bench("5.0.0  compress", iters, |_| black_box(&p5).compress().to_bytes()[0]);
+    let cmp4 = bench("4.1.3  compress", iters, |_| {
+        black_box(&p4).compress().to_bytes()[0]
+    });
+    let cmp5 = bench("5.0.0  compress", iters, |_| {
+        black_box(&p5).compress().to_bytes()[0]
+    });
     println!("\n  compress speedup:             {:.3}x", cmp4 / cmp5);
 
     let end4 = mul4 + cmp4;
