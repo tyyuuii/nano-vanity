@@ -80,6 +80,37 @@ impl State {
     }
 }
 
+/// Insert a job and reap finished ones, for either chain.
+///
+/// The reaping used to live inline in the Nano branch only, so a Qubic job was
+/// inserted and never reclaimed: the map grew for the lifetime of the server,
+/// holding every finished Qubic job's seed and private keys in memory. That
+/// matters more for Qubic than for Nano, because a Qubic seed *is* a wallet --
+/// the identity cannot be recovered from anything else -- so an unbounded pile
+/// of finished jobs is an unbounded pile of wallets sitting in the process.
+///
+/// Only *finished* jobs are dropped, so a running job is never pulled out from
+/// under a poller.
+fn store_job(state: &State, id: u64, job: AnyJob) {
+    let mut jobs = state.jobs.lock().unwrap();
+    jobs.insert(id, job);
+    if jobs.len() > MAX_JOBS {
+        // Sorted by id, so the *oldest* finished jobs go first. Iterating the
+        // map directly would pick an arbitrary one among the finished jobs,
+        // since HashMap order is not stable -- which could retire a job someone
+        // was still polling while keeping a newer one.
+        let mut finished: Vec<u64> = jobs
+            .iter()
+            .filter(|(_, j)| !j.is_running())
+            .map(|(k, _)| *k)
+            .collect();
+        finished.sort_unstable();
+        for k in finished.into_iter().take(jobs.len() - MAX_JOBS) {
+            jobs.remove(&k);
+        }
+    }
+}
+
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
@@ -554,7 +585,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                         let this = *id;
                         *id += 1;
                         drop(id);
-                        state.jobs.lock().unwrap().insert(this, AnyJob::Qubic(job));
+                        store_job(state, this, AnyJob::Qubic(job));
                         write_response(
                             &mut stream,
                             "200 OK",
@@ -623,26 +654,7 @@ fn handle(state: &Arc<State>, mut stream: TcpStream) -> std::io::Result<()> {
                     let this = *id;
                     *id += 1;
                     drop(id);
-                    {
-                        let mut jobs = state.jobs.lock().unwrap();
-                        jobs.insert(this, AnyJob::Nano(job));
-                        // Reap old jobs. Without this the map grows for the
-                        // lifetime of the server, holding every finished Job
-                        // (and its seed and keys) in memory after each run.
-                        // Only *finished* jobs are dropped, so a running job is
-                        // never pulled out from under a poller.
-                        if jobs.len() > MAX_JOBS {
-                            let stale: Vec<u64> = jobs
-                                .iter()
-                                .filter(|(_, j)| !j.is_running())
-                                .map(|(k, _)| *k)
-                                .take(jobs.len() - MAX_JOBS)
-                                .collect();
-                            for k in stale {
-                                jobs.remove(&k);
-                            }
-                        }
-                    }
+                    store_job(state, this, AnyJob::Nano(job));
                     write_response(
                         &mut stream,
                         "200 OK",
