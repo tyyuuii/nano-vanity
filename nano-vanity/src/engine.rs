@@ -173,6 +173,7 @@ fn search(
     counter: &AtomicU64,
     ceiling: u64,
     axis: Axis,
+    shared: &Mutex<Vec<Found>>,
 ) -> (Vec<Found>, u64) {
     assert!(want >= 1, "want must be at least 1");
 
@@ -183,7 +184,13 @@ fn search(
     // never enter the result.
     let limit = AtomicU64::new(u64::MAX);
     // Matches, ascending by index, never longer than `want`.
-    let matches: Mutex<Vec<Found>> = Mutex::new(Vec::new());
+    //
+    // Shared with the `Job` rather than owned here. It used to be local, which
+    // meant a poller had no way to see a match until the whole search returned:
+    // the web UI sat on `results: 0` for the entire run and then rendered
+    // everything at once. The pruning below is unchanged, so a mid-run read is
+    // exactly the prefix of the final result that is already certain.
+    let matches: &Mutex<Vec<Found>> = shared;
     // Block ids currently held by a worker. Used to decide when a match sitting
     // in a block that is still running can be trusted as final.
     let in_flight: Mutex<HashSet<u64>> = Mutex::new(HashSet::new());
@@ -357,6 +364,9 @@ pub struct Job {
     started: Instant,
     stop: Arc<AtomicBool>,
     counter: Arc<AtomicU64>,
+    /// The live match list, shared with `search`. Read by `partial` so a poller
+    /// can see matches while the job is still running.
+    matches: Arc<Mutex<Vec<Found>>>,
     slot: Arc<(Mutex<Slot>, Condvar)>,
 }
 
@@ -474,6 +484,8 @@ impl Job {
         let expected = pattern.expected_tries();
         let stop = Arc::new(AtomicBool::new(false));
         let counter = Arc::new(AtomicU64::new(0));
+        // Shared with `search` so `partial()` can expose in-progress matches.
+        let matches = Arc::new(Mutex::new(Vec::new()));
         let started = Instant::now();
         let slot = Arc::new((
             Mutex::new(Slot {
@@ -498,6 +510,7 @@ impl Job {
             started,
             stop: stop.clone(),
             counter: counter.clone(),
+            matches: matches.clone(),
             slot: slot.clone(),
         });
 
@@ -519,6 +532,8 @@ impl Job {
         let axis_for_run = axis;
         let stop_for_run = stop.clone();
         let counter_for_run = counter.clone();
+        // The shared match list, so `partial()` can expose matches mid-run.
+        let matches_for_run = matches.clone();
         std::thread::spawn(move || {
             // Always the same answer for the same prefix: see `search`.
             let (found, tries) = search(
@@ -530,6 +545,7 @@ impl Job {
                 &counter_for_run,
                 ceiling,
                 axis_for_run,
+                &matches_for_run,
             );
             // Fewer matches than asked for is still a success: report what was
             // actually found and let the front-end report the shortfall.
@@ -591,6 +607,40 @@ impl Job {
             (self.tries() as f64 / target).min(1.0)
         } else {
             0.0
+        }
+    }
+
+    /// Matches found so far, ascending by attempt, **while the job is still
+    /// running**.
+    ///
+    /// This is what a progress display needs and it did not exist. The match
+    /// list used to live entirely inside `search`, so the only way to see a
+    /// result was to wait for the search to return: a request for 5 addresses
+    /// showed `results: 0` for the entire run and then rendered all 5 at once.
+    ///
+    /// The pruning is the same lowest-first rule the final result uses, so what
+    /// a poller sees is a genuine subset of the answer rather than a preview
+    /// that can later be contradicted. It can still change, and correctly so: a
+    /// lower attempt found later displaces a higher one, which is the whole
+    /// point of ordering by attempt rather than by discovery time.
+    pub fn partial(&self) -> Vec<Found> {
+        self.matches.lock().unwrap().clone()
+    }
+
+    /// Candidates examined so far, never decreasing.
+    ///
+    /// `tries` deliberately changes meaning at completion: it is the live work
+    /// counter while running, then the deterministic "first matching index plus
+    /// one" once finished. That is right for the CLI, which reports a stable
+    /// figure, and wrong for a progress bar -- where the number visibly jumping
+    /// *backwards* at the moment a search ends reads as a bug. Pollers want
+    /// this one; the CLI wants `tries`.
+    pub fn tries_live(&self) -> u64 {
+        let live = self.counter.load(Ordering::Relaxed);
+        let guard = self.slot.0.lock().unwrap();
+        match (guard.outcome.is_some(), guard.tries) {
+            (true, final_tries) => live.max(final_tries),
+            (false, _) => live,
         }
     }
 

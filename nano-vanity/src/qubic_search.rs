@@ -86,6 +86,13 @@ pub struct QubicJob {
     pub time_limit: Option<u64>,
     started: Instant,
     stop: Arc<AtomicBool>,
+    /// The live match list, shared with the workers. Read by `partial` so a
+    /// poller can see a found identity while the search is still running --
+    /// which matters more here than on Nano, since a Qubic found seed is the
+    /// whole wallet and losing one to a closed tab would be unforgivable.
+    matches: Arc<Mutex<Vec<Found>>>,
+    /// The live work counter, for the monotonic view `tries_live` needs.
+    live: Arc<AtomicU64>,
     slot: Arc<(Mutex<Slot>, Condvar)>,
 }
 
@@ -116,6 +123,11 @@ impl QubicJob {
             Condvar::new(),
         ));
 
+        // Created before the job so it can be shared with the workers *and*
+        // kept by the job for `partial()`.
+        let matches: Arc<Mutex<Vec<Found>>> = Arc::new(Mutex::new(Vec::new()));
+        let live = counter.clone();
+
         let job = Arc::new(QubicJob {
             pattern: pattern.clone(),
             threads,
@@ -124,6 +136,8 @@ impl QubicJob {
             time_limit: seconds,
             started: Instant::now(),
             stop: Arc::clone(&stop),
+            matches: Arc::clone(&matches),
+            live,
             slot: Arc::clone(&slot),
         });
 
@@ -133,7 +147,6 @@ impl QubicJob {
         // known match once enough are held; anything at or above it can never
         // enter the result.
         let limit = Arc::new(AtomicU64::new(u64::MAX));
-        let matches: Arc<Mutex<Vec<Found>>> = Arc::new(Mutex::new(Vec::new()));
         let in_flight: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
 
         // The time limit is enforced by a supervisor rather than checked inside
@@ -340,6 +353,40 @@ impl QubicJob {
             return 0.0;
         }
         (self.tries() as f64 / self.expected).clamp(0.0, 1.0)
+    }
+
+    /// Matches found so far, ascending by attempt, while the job is still
+    /// running. See `engine::Job::partial` for why this exists and why the
+    /// pruning makes a mid-run read trustworthy.
+    pub fn partial(&self) -> Vec<Found> {
+        self.matches.lock().unwrap().clone()
+    }
+
+    /// Candidates examined so far, never decreasing.
+    ///
+    /// `tries` switches to the deterministic "attempt of the last match plus
+    /// one" at completion, which is right for the CLI and wrong for a progress
+    /// bar: the number would visibly jump backwards. Pollers want this.
+    pub fn tries_live(&self) -> u64 {
+        let live = self.counter_for_rate();
+        let guard = self.slot.0.lock().unwrap();
+        match guard.outcome {
+            Some(QubicOutcome::Found(ref f)) => {
+                live.max(f.last().map(|m| m.attempt + 1).unwrap_or(0))
+            }
+            _ => live,
+        }
+    }
+
+    /// The raw work counter. Kept separate so `tries_live` can floor it against
+    /// the deterministic figure without `tries` having to know about either.
+    fn counter_for_rate(&self) -> u64 {
+        let guard = self.slot.0.lock().unwrap();
+        if guard.outcome.is_some() {
+            guard.tries
+        } else {
+            self.live.load(Ordering::Relaxed)
+        }
     }
 
     pub fn outcome(&self) -> Option<QubicOutcome> {

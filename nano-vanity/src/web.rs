@@ -116,9 +116,18 @@ fn json_field(body: &str, key: &str) -> Option<String> {
 }
 
 fn status_json(job: &Job) -> String {
-    let tries = job.tries();
+    // The monotonic counter, not `tries()`. `tries` switches to the
+    // deterministic "first matching index plus one" the moment the search
+    // completes, so a polled run watched its try count climb and then snap
+    // *backwards* at the end -- a decreasing number reads as a bug even when it
+    // is the more correct figure. The CLI still reports `tries`.
+    let tries = job.tries_live();
     let elapsed = job.elapsed_secs();
-    let rate = job.rate();
+    let rate = if tries == 0 {
+        0.0
+    } else {
+        tries as f64 / elapsed.max(f64::MIN_POSITIVE)
+    };
     let progress = job.progress();
 
     let mut out = String::from("{");
@@ -138,7 +147,28 @@ fn status_json(job: &Job) -> String {
     out.push_str(&format!("\"progress\":{progress:.6},"));
 
     match job.outcome() {
-        None => out.push_str("\"state\":\"running\""),
+        // While running, report whatever has already been found rather than
+        // nothing. The match list used to be unreachable until the search
+        // returned, so a request for 5 addresses displayed zero results for the
+        // whole run and then all five at once.
+        None => {
+            let partial = job.partial();
+            out.push_str("\"state\":\"running\",");
+            out.push_str(&format!("\"count\":{},", partial.len()));
+            out.push_str("\"partial\":true,\"results\":[");
+            for (n, f) in partial.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"address\":{},\"private_key\":{},\"index\":{}}}",
+                    json_str(&f.address),
+                    json_str(&engine::hex_upper(&f.private_key)),
+                    f.index
+                ));
+            }
+            out.push(']');
+        }
         Some(Outcome::Exhausted) => {
             // A capped miss is not the same as an impossible pattern, and the UI
             // used to say only "exhausted", which reads as "it bugged out".
@@ -196,9 +226,15 @@ fn status_json(job: &Job) -> String {
 /// `capped` state on the Qubic side, and a Qubic result carries a 55-letter
 /// seed that *is* the wallet rather than a shared 64-hex seed.
 fn qubic_status_json(job: &QubicJob) -> String {
-    let tries = job.tries();
+    // See `status_json`: the monotonic counter, because `tries` drops to the
+    // deterministic value at completion and a decreasing number reads as a bug.
+    let tries = job.tries_live();
     let elapsed = job.elapsed_secs();
-    let rate = job.rate();
+    let rate = if tries == 0 {
+        0.0
+    } else {
+        tries as f64 / elapsed.max(f64::MIN_POSITIVE)
+    };
     let progress = job.progress();
 
     let mut out = String::from("{");
@@ -218,7 +254,29 @@ fn qubic_status_json(job: &QubicJob) -> String {
     out.push_str(&format!("\"progress\":{progress:.6},"));
 
     match job.outcome() {
-        None => out.push_str("\"state\":\"running\""),
+        // Stream matches while the search runs. This matters more here than on
+        // Nano: a Qubic found seed *is* the wallet, so an identity that turned
+        // up ten minutes into a two-hour search should not be invisible until
+        // the search ends.
+        None => {
+            let partial = job.partial();
+            out.push_str("\"state\":\"running\",");
+            out.push_str(&format!("\"count\":{},", partial.len()));
+            out.push_str("\"partial\":true,\"results\":[");
+            for (n, f) in partial.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"address\":{},\"private_key\":{},\"seed\":{},\"attempt\":{}}}",
+                    json_str(&f.identity),
+                    json_str(&engine::hex_upper(&f.private_key)),
+                    json_str(&f.seed),
+                    f.attempt
+                ));
+            }
+            out.push(']');
+        }
         Some(QubicOutcome::Exhausted) => {
             // No "capped" state exists on this chain: there is no index ceiling
             // to hit. A time limit is the only way to stop early.
@@ -1013,7 +1071,20 @@ async function tick() {
   $('p-bar').style.width = Math.min(100, data.progress * 100).toFixed(2) + '%';
 
   if (data.state === 'running') {
-    const remaining = Math.max(0, data.expected - data.tries);
+    // Show matches as they are found instead of holding every one back until the
+  // search ends. The API sends them on every poll, marked `partial`, so a
+  // two-hour search shows its first result the minute it turns up rather than an
+  // empty screen. Re-rendering each poll is fine: the list only grows, or swaps
+  // a higher attempt for a lower one that was found later.
+  if (data.partial && (data.results || []).length) {
+    lastResults = data.results;
+    renderCards(data.results, data);
+    $('r-seed').textContent = '';
+    $('r-title').textContent =
+      'Found ' + data.results.length + ' so far, still searching\u2026';
+    $('result').hidden = false;
+  }
+  const remaining = Math.max(0, data.expected - data.tries);
     $('p-eta').textContent = data.rate > 0
       ? 'expected total ~' + dur(data.expected / data.rate) + ' · ~' + dur(remaining / data.rate) + ' to go'
       : '';
@@ -1030,31 +1101,7 @@ async function tick() {
     const results = data.results || [];
     lastResults = results;
     $('r-seed').textContent = data.seed || '';
-    $('r-list').textContent = '';
-    results.forEach(function (r, i) {
-      const card = document.createElement('div');
-      card.className = 'kv';
-      const add = function (label, value, cls) {
-        const b = document.createElement('b');
-        b.textContent = label;
-        const s = document.createElement('span');
-        s.textContent = value;
-        if (cls) { s.className = cls; }
-        card.appendChild(b);
-        card.appendChild(s);
-      };
-      add(results.length > 1 ? '#' + (i + 1) + ' address' : 'address', r.address, 'addr');
-      add('private key', r.private_key);
-      // A Qubic result has no account index and carries its own seed, which is
-      // the wallet. Showing "account index: null" would be worse than showing
-      // the field that actually matters.
-      if (data.chain === 'qubic') {
-        add('seed — this IS the wallet', r.seed, 'seed');
-      } else {
-        add('account index', r.index);
-      }
-      $('r-list').appendChild(card);
-    });
+    renderCards(results, data);
     let title = results.length === 1
       ? 'Found 1 address.'
       : 'Found ' + results.length + ' addresses.';
@@ -1091,6 +1138,36 @@ async function tick() {
     };
     err('No match found. ' + (WHY[data.why] || WHY.exhausted));
   }
+}
+
+// Builds the result cards. Shared by the finished and in-progress paths, so a
+// live match is displayed exactly the way a final one will be.
+function renderCards(results, data) {
+  $('r-list').textContent = '';
+  results.forEach(function (r, i) {
+    const card = document.createElement('div');
+    card.className = 'kv';
+    const add = function (label, value, cls) {
+      const b = document.createElement('b');
+      b.textContent = label;
+      const s = document.createElement('span');
+      s.textContent = value;
+      if (cls) { s.className = cls; }
+      card.appendChild(b);
+      card.appendChild(s);
+    };
+    add(results.length > 1 ? '#' + (i + 1) + ' address' : 'address', r.address, 'addr');
+    add('private key', r.private_key);
+    // A Qubic result has no account index and carries its own seed, which is
+    // the wallet. Showing "account index: null" would be worse than showing the
+    // field that actually matters.
+    if (data.chain === 'qubic') {
+      add('seed \u2014 this IS the wallet', r.seed, 'seed');
+    } else {
+      add('account index', r.index);
+    }
+    $('r-list').appendChild(card);
+  });
 }
 
 function stopPolling() {
